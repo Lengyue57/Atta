@@ -28,7 +28,7 @@ SUPPORTED = (
     "bbox", "volume_mm3", "min_wall_mm", "genus", "closed", "n_components",
     "dihedral_max_deg", "curvature_p95_deg", "clearance", "interference",
     "interfaces", "envelope", "holes", "render", "render_receipt",
-    "name", "material",
+    "silhouette_iou", "name", "material",
 )
 
 
@@ -167,6 +167,80 @@ def _available(parts):
     if not isinstance(parts, dict) or not parts:
         return "(none)"
     return ", ".join(sorted(str(k) for k in parts))
+
+
+def _silhouette_checks(checks, mesh, spec, severity):
+    """Compare built silhouettes to declared outlines (form gate).
+
+    ``spec`` is either one row or a list of rows.  A row is
+    ``{"view": "front", "outline_mm": [[u,v],...], "min_iou": 0.9}``; a row
+    without ``outline_mm`` but with ``target_model_id`` compares against
+    another model in the workspace.
+
+    The check is deliberately one-directional: it can *fail* a model whose
+    outline disagrees with the declared form, but passing it never proves the
+    solid is correct — ``closed``, ``volume`` and the wall checks still have to
+    hold.
+    """
+    from . import form as _form
+
+    for i, row in enumerate(_rows(spec)):
+        cid = "silhouette_iou" if len(_rows(spec)) == 1 else "silhouette_iou.%d" % i
+        view = str(row.get("view") or "front").lower()
+        need = row.get("min_iou", 0.90)
+        try:
+            need = float(need)
+        except (TypeError, ValueError):
+            _malformed(checks, cid, _Malformed("%r is not a number" % (need,)),
+                       "Use min_iou: 0.90.")
+            continue
+        if not (0.0 <= need <= 1.0):
+            _malformed(checks, cid, _Malformed("min_iou must be 0..1"),
+                       "Use min_iou: 0.90.")
+            continue
+        outline = row.get("outline_mm")
+        target_id = row.get("target_model_id") or row.get("target")
+        if outline is None and not target_id:
+            _check(checks, cid, False, "error", None, ">=%.2f" % need,
+                   "silhouette_iou row has no outline_mm or target_model_id",
+                   "pass outline_mm=[[u,v],...] or target_model_id='mdl_...'")
+            continue
+        try:
+            if outline is not None:
+                target = {"views": {view: {"outline_mm": outline}}}
+            else:
+                from . import state as _state
+                rec = _state.get(str(target_id))
+                if not rec:
+                    _check(checks, cid, False, "error", None, ">=%.2f" % need,
+                           "target model %r is not in this workspace" % (target_id,),
+                           "build the target first, or pass its model_id")
+                    continue
+                from . import engine as _engine
+                _, tmesh, _ = _engine._load(str(target_id))
+                target = tmesh
+            report = _form.form_agreement(mesh, target, views=(view,),
+                                          res=int(row.get("res", 32)))
+        except Exception as exc:  # noqa: BLE001 - report, never crash the gate
+            _check(checks, cid, False, "error", None, ">=%.2f" % need,
+                   "silhouette comparison failed: %s" % exc,
+                   "check outline_mm is a closed polygon in mm")
+            continue
+        got = (report.get("views") or {}).get(view, {}).get("iou")
+        if got is None:
+            _check(checks, cid, False, "error", None, ">=%.2f" % need,
+                   "silhouette %r could not be compared" % view,
+                   "use view front, top or right with a closed outline")
+            continue
+        ok = float(got) >= need
+        _check(checks, cid, ok, severity, round(float(got), 4),
+               ">=%.2f" % need,
+               ("silhouette %s matches the declared form (IoU %.3f)"
+                % (view, got)) if ok else
+               ("silhouette %s differs from the declared form (IoU %.3f)"
+                % (view, got)),
+               "the outline is the target; adjust proportions, not just "
+               "parameters. describe(probe='form') shows the +/- overlay")
 
 
 def _receipt_dict(receipt):
@@ -602,6 +676,20 @@ def verify(mesh: M.Mesh, *, constraints=None, expected_genus=None,
                            else "curvature p95 exceeds the limit",
                            "increase profile/segment sampling or smooth the "
                            "surface; curvature is a vertex-normal proxy")
+
+        # -------------------------------------------- form gates
+        # The visual channel's only route into the verdict: compare the built
+        # silhouette to a declared target outline, so "the parameters matched
+        # but the shape is wrong" fails here instead of passing quietly.
+        # Warn-level on purpose: a silhouette is a projection, and a projection
+        # cannot prove a solid.
+        if "silhouette_iou" in cons:
+            if not gates:
+                _skip(checks, "silhouette_iou", level,
+                      "silhouette comparison needs rasterised views")
+            else:
+                _silhouette_checks(checks, mesh, cons["silhouette_iou"],
+                                   quality_sev)
 
         # -------------------------------------------- pair gates
         if cons.get("clearance") and not gates:

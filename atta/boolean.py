@@ -61,20 +61,28 @@ def _from_manifold(obj):
 
 
 def _run(a, b, op):
-    import trimesh
-    try:
-        out = getattr(trimesh.boolean, op)([_to_trimesh(a), _to_trimesh(b)],
-                                           engine="manifold")
-        return _from_trimesh(out)
-    except AttaError:
-        raise
-    except Exception:
-        pass
+    """Run the boolean through manifold3d directly.
+
+    manifold3d is tried first, not trimesh: trimesh's ``manifold`` engine is a
+    wrapper around the same library, and importing trimesh costs ~0.5 s cold —
+    paid on every plugin call, since each call starts a fresh interpreter.
+    """
     try:
         ma, mb = _to_manifold(a), _to_manifold(b)
         out = {"union": ma + mb, "difference": ma - mb,
                "intersection": ma ^ mb}[op]
-        return _from_manifold(out)
+        return _from_manifold(out), "manifold3d"
+    except AttaError:
+        raise
+    except Exception:  # noqa: BLE001 - fall back to trimesh
+        pass
+    try:
+        import trimesh
+        out = getattr(trimesh.boolean, op)([_to_trimesh(a), _to_trimesh(b)],
+                                           engine="manifold")
+        return _from_trimesh(out), "trimesh"
+    except AttaError:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise AttaError("boolean_failed", "boolean %s failed: %s" % (op, exc),
                         path="boolean.%s" % op,
@@ -83,7 +91,20 @@ def _run(a, b, op):
 
 
 def boolean(a, b, op="union") -> Mesh:
-    """CSG of two closed solids: ``op`` is union, difference or intersection."""
+    """CSG of two closed solids: ``op`` is union, difference or intersection.
+
+    **Do not weld the output.**  When two solids touch along an edge or a face,
+    manifold3d emits two coincident but topologically *distinct* vertices — one
+    per solid.  Welding them at 1e-9 snaps the pair together and collapses a
+    proper 2-manifold into a 4-faces-per-edge non-manifold edge, which then
+    fails the ``closed`` test.  The geometry was correct; the post-processing
+    broke it.
+
+    A tangent union legitimately produces **two** connected components (two
+    solids sharing a boundary), so ``n_components > 1`` is accepted here; the
+    verify gate reports the count and the caller decides whether that is
+    intended.
+    """
     name = str(op).lower()
     if name not in _OPS:
         raise AttaError("bad_arg", "boolean op must be union, difference or intersection",
@@ -96,12 +117,25 @@ def boolean(a, b, op="union") -> Mesh:
             raise AttaError("boolean_input_open", "boolean input %s is not closed" % label,
                             path="boolean.%s" % label,
                             fix="pass a watertight mesh; close caps or thicken the surface")
-    out = oriented(weld(_run(a, b, name), 1e-9))
-    if not topology(out)["closed"]:
+
+    out, backend = _run(a, b, name)
+    out = oriented(out)
+    topo = topology(out)
+    if not topo["closed"]:
+        # Fallback only: an exact weld (tol 0 is a no-op, so use a tiny one) can
+        # rescue inputs that carried coincident vertices through manifold3d.
+        # It must never be the default, because welding *first* is what breaks
+        # tangency.
+        retry = oriented(weld(out, 1e-12))
+        if topology(retry)["closed"]:
+            retry.meta["boolean"] = {"backend": backend, "welded_retry": True}
+            return retry
         raise AttaError("boolean_not_closed", "boolean %s result is not closed" % name,
                         path="boolean.%s" % name,
                         fix="nudge the tool by 1e-4 m, lower the overlap, or rebuild the "
                             "inputs with more segments")
+    out.meta["boolean"] = {"backend": backend,
+                           "components": int(topo["n_components"])}
     return out
 
 

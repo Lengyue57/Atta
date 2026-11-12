@@ -545,7 +545,18 @@ def _prepare_extra(op, args, path, scale, meshes=()):
                             path=path + ".args", fix="add args.%s" % name)
     custom = getattr(fn, "prepare", None)
     if custom is not None:
-        return custom(dict(args), scale, path)
+        out = custom(dict(args), scale, path)
+        # A custom prepare owns argument coercion but not graph wiring: the
+        # wired input is injected here so an arity>=1 op can never silently
+        # ignore its input mesh (this bit every custom prepare that forgot it).
+        if int(FEATURE_OPS[op]["arity"]) >= 1:
+            if meshes:
+                out.setdefault("mesh", meshes[0])
+            elif "mesh" not in out:
+                raise AttaError("bad_arg", "%s needs an input mesh" % op,
+                                path=path + ".inputs",
+                                fix="pass inputs=[\"<id>\"]")
+        return out
 
     lengths = set(spec.get("lengths") or ())
     vectors = set(spec.get("vectors") or ())

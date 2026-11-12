@@ -8,5 +8,5 @@ SCHEMA_DELIVER = "atta.deliver/v3"
 SCHEMA_PREVIEW = "atta.preview/v3"
 SCHEMA_TOOLS = "atta.tools/v3"
 
-VERSION = "1.2.0"
+VERSION = "1.2.1b1"
 CODENAME = "leafcutter"

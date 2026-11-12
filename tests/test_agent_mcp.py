@@ -23,6 +23,8 @@ TOOL_NAMES = [
     "atta_preview",
     "atta_deliver",
     "atta_run",
+    "atta_conjure",
+    "atta_design",
 ]
 
 
@@ -151,5 +153,5 @@ def test_model_then_verify_keeps_arrival_order(tmp_path):
 def test_protocol_version_echo_or_default(protocol, expected):
     responses, _ = _run_session(protocol, doctor=False)
     assert responses[1]["result"]["protocolVersion"] == expected
-    assert len(responses[2]["result"]["tools"]) == 10
+    assert len(responses[2]["result"]["tools"]) == 12
     assert 3 not in responses  # no tools/call requested

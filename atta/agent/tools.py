@@ -303,6 +303,59 @@ TOOLS: list[dict] = [
             "stop_on_error": {**_BOOL, "default": True, "description": "遇错即停（默认 true）"},
         }, required=["steps"]),
     },
+    {
+        "name": "atta_conjure",
+        "description": (
+            "[Atta v1.21] 无数据虚构建模。给一个语义标签（中英文均可，如 "
+            "'rifle magazine' / '一颗星球' / 'fantasy sword'），按内置原型表 + 比例规则 + "
+            "种子，直接发明一套可信的参数与构建方案，不需要上网查真实尺寸。"
+            "每个数值都标注 provenance：measured（你给的）/ archetype（原型比例）/ "
+            "invented（按种子生成）。build=true 时直接建模并返回 model_id。"
+            "虚构/幻想题材优先用它，而不是去搜索不存在的参数。"
+        ),
+        "inputSchema": _obj({
+            "label": {**_STR, "description": "语义标签，如 'a battered rifle magazine'、'一颗星球'"},
+            "seed": {**_INT, "default": 0,
+                     "description": "确定性种子：同 label+seed+style 必得同一结果；换 seed 得变体"},
+            "style": {**_STR, "default": "neutral",
+                      "description": "风格：neutral/brutal/elegant/organic/industrial/scifi/fantasy/ancient"},
+            "size_mm": {"type": "array", "items": {"type": "number"},
+                        "minItems": 3, "maxItems": 3,
+                        "description": "可选：直接指定包围盒 [x,y,z] mm（标记为 measured）"},
+            "scale": {**{"type": "number"}, "default": 1.0, "description": "整体缩放系数"},
+            "constraints": {"type": "object", "additionalProperties": True,
+                            "description": '{"max_mm":[x,y,z]} 或 {"min_mm":[...]} 夹紧发明的包围盒'},
+            "build": {**_BOOL, "default": False,
+                      "description": "true 时按发明的构建方案真正建模并提交 model_id"},
+            "quality": {"type": "string", "enum": ["draft", "review", "deliver"],
+                        "default": "draft"},
+        }, required=["label"]),
+    },
+    {
+        "name": "atta_design",
+        "description": (
+            "[Atta v1.21] 设计法则检查。verify 只判“是不是合法实体”，它判“形体读不读得懂、"
+            "能不能造”：轮廓可读性（缩小后是否还认得出）、负空间、形体三级层次、比例、对称、"
+            "可打印性（最小壁厚/悬垂）、可脱模（拔模角）、可加工（内角半径）。"
+            "每条返回 ok/value/advice；ok=null 表示不适用。模型可以通过 verify 却在这里失败——"
+            "这正是它存在的意义。"
+        ),
+        "inputSchema": _obj({
+            "model_id": {**_STR, "description": "模型 id；省略则用最近一个"},
+            "rules": {"type": "array", "items": {"type": "string"},
+                      "description": "只跑指定规则：readability/negative_space/"
+                                     "form_hierarchy/proportion/symmetry/printability/"
+                                     "moldability/machinability"},
+            "target_size_mm": {"type": "array", "items": {"type": "number"},
+                               "minItems": 3, "maxItems": 3,
+                               "description": "目标包围盒，用于比例误差检查"},
+            "min_wall_mm": {**{"type": "number"}, "default": 0.8},
+            "max_overhang_deg": {**{"type": "number"}, "default": 45.0},
+            "min_draft_deg": {**{"type": "number"}, "default": 1.0},
+            "tool_radius_mm": {**{"type": "number"}, "default": 3.0},
+            "readability_threshold": {**{"type": "number"}, "default": 0.90},
+        }),
+    },
 ]
 
 TOOL_NAMES: tuple[str, ...] = tuple(t["name"] for t in TOOLS)
@@ -820,6 +873,46 @@ def _run(engine, args: dict) -> Any:
     )
 
 
+def _conjure(engine, args: dict) -> Any:
+    label = args.get("label")
+    if not isinstance(label, str) or not label.strip():
+        raise AttaError("bad_arguments", "atta_conjure requires a label",
+                        path="label",
+                        fix='pass label="rifle magazine" or label="一颗星球"')
+    style = str(args.get("style") or "neutral").strip().lower()
+    from atta import conjure as _conjure_mod
+    if style not in _conjure_mod.STYLES:
+        raise AttaError("bad_arguments", "unknown style %r" % style,
+                        path="style",
+                        fix="use one of: " + ", ".join(sorted(_conjure_mod.STYLES)))
+    return engine.conjure(
+        label,
+        seed=int(args.get("seed", 0) or 0),
+        style=style,
+        size_mm=args.get("size_mm"),
+        scale=float(args.get("scale", 1.0) or 1.0),
+        constraints=args.get("constraints"),
+        build=bool(args.get("build", False)),
+        quality=str(args.get("quality") or "draft"),
+    )
+
+
+def _design(engine, args: dict) -> Any:
+    rules = args.get("rules")
+    if isinstance(rules, str):
+        rules = [r.strip() for r in rules.split(",") if r.strip()]
+    return engine.design(
+        model_id=args.get("model_id"),
+        rules=rules,
+        target_size_mm=args.get("target_size_mm"),
+        min_wall_mm=float(args.get("min_wall_mm", 0.8)),
+        max_overhang_deg=float(args.get("max_overhang_deg", 45.0)),
+        min_draft_deg=float(args.get("min_draft_deg", 1.0)),
+        tool_radius_mm=float(args.get("tool_radius_mm", 3.0)),
+        readability_threshold=float(args.get("readability_threshold", 0.90)),
+    )
+
+
 _HANDLERS = {
     "atta_doctor": _doctor,
     "atta_catalog": _catalog,
@@ -831,6 +924,8 @@ _HANDLERS = {
     "atta_preview": _preview,
     "atta_deliver": _deliver,
     "atta_run": _run,
+    "atta_conjure": _conjure,
+    "atta_design": _design,
 }
 
 

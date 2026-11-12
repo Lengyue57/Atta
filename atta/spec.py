@@ -79,6 +79,8 @@ CONSTRAINT_DOCS: dict[str, str] = {
     "envelope": "{min:[x,y,z], max:[x,y,z]} world envelope",
     "holes": "[{diameter, tolerance, count}] expected cylindrical holes",
     "render": "{res:[w,h], samples:n, require_ndc:true} render contract",
+    "silhouette_iou": "[{view, outline_mm|target_model_id, min_iou}] form gate: "
+                      "built silhouette vs a declared outline (0..1 IoU)",
 }
 
 #: Human-facing finish keys.  ``*_mm`` is millimetres, ``*_deg`` degrees.
@@ -305,6 +307,44 @@ def _validate_constraint_value(key: str, value: Any, errors: list[dict]) -> None
         if not isinstance(value, Mapping):
             _err(errors, "bad_constraint", path, "render must be an object",
                  "Use {res:[w,h], samples:n, require_ndc:true}.")
+            return
+        return
+    if key == "silhouette_iou":
+        rows = value if isinstance(value, (list, tuple)) else [value]
+        if not rows:
+            _err(errors, "bad_constraint", path,
+                 "silhouette_iou must have at least one row",
+                 "Use [{view:'front', outline_mm:[[x,z],...], min_iou:0.9}].")
+            return
+        for i, row in enumerate(rows):
+            where = path if len(rows) == 1 else "%s[%d]" % (path, i)
+            if not isinstance(row, Mapping):
+                _err(errors, "bad_constraint", where,
+                     "silhouette_iou row must be an object",
+                     "Use {view:'front', outline_mm:[[x,z],...], min_iou:0.9}.")
+                continue
+            view = row.get("view", "front")
+            if not isinstance(view, str) or view.lower() not in (
+                    "front", "top", "right"):
+                _err(errors, "bad_constraint", where + ".view",
+                     "view must be front, top or right",
+                     "Use view: 'front' (x-z), 'top' (x-y) or 'right' (y-z).")
+            if row.get("outline_mm") is None and not row.get("target_model_id"):
+                _err(errors, "bad_constraint", where,
+                     "row needs outline_mm or target_model_id",
+                     "Pass outline_mm=[[u,v],...] in mm, or target_model_id.")
+                continue
+            outline = row.get("outline_mm")
+            if outline is not None:
+                if not _is_mat(outline, 2, 3):
+                    _err(errors, "bad_constraint", where + ".outline_mm",
+                         "outline_mm must be a closed 2D loop of >= 3 points",
+                         "Use [[u,v], ...] in mm.")
+            need = row.get("min_iou", 0.9)
+            if not _is_num(need) or not (0.0 <= float(need) <= 1.0):
+                _err(errors, "bad_constraint", where + ".min_iou",
+                     "min_iou must be a number in 0..1",
+                     "Use min_iou: 0.90.")
         return
     if key in {"min_wall_mm", "dihedral_max_deg", "curvature_p95_deg"}:
         if not _is_num(value) or not math.isfinite(float(value)):

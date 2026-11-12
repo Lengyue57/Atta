@@ -24,6 +24,8 @@ EXPECTED = [
     "atta_preview",
     "atta_deliver",
     "atta_run",
+    "atta_conjure",
+    "atta_design",
 ]
 
 
@@ -46,7 +48,7 @@ def _fake_engine(calls, *, error=None):
     })
 
 
-def test_exactly_ten_tools_in_order():
+def test_exactly_twelve_tools_in_order():
     assert [tool["name"] for tool in tools.TOOLS] == EXPECTED
     assert tuple(tools.TOOL_NAMES) == tuple(EXPECTED)
     assert list(tools.TOOL_BY_NAME) == EXPECTED
@@ -211,11 +213,11 @@ def test_timeout_is_enforced_when_requested(monkeypatch):
 def test_manifests_have_ten_tools():
     from atta.agent import manifest
 
-    assert len(manifest("openai")) == 10
-    assert len(manifest("anthropic")) == 10
-    assert len(manifest("mcp")) == 10
+    assert len(manifest("openai")) == 12
+    assert len(manifest("anthropic")) == 12
+    assert len(manifest("mcp")) == 12
     generic = manifest("generic")
     assert generic["name"] == "atta"
-    assert len(generic["tools"]) == 10
+    assert len(generic["tools"]) == 12
     with pytest.raises(ValueError):
         manifest("bogus")

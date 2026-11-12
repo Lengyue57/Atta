@@ -1498,12 +1498,27 @@ def _probe_one(mesh: Mesh, op: str, args: dict):
             raise AttaError("bad_arguments", "inside needs point_mm",
                             path="probe.point_mm", fix="pass [x,y,z] in mm")
         return {"inside": bool(probe.inside(mesh, point))}
+    if op in ("form", "form_agreement", "match"):
+        from . import form as _form
+        target = args.get("target")
+        if target is None:
+            raise AttaError(
+                "bad_arguments", "%s needs a target" % op, path="probe.target",
+                fix='pass {"op":"form","target":{"views":{"front":'
+                    '{"outline_mm":[[x,z],...]}}}} or a target model_id')
+        if isinstance(target, str):
+            _, other_mesh, _ = _load(target)
+            target = other_mesh
+        return _form.form_agreement(
+            mesh, target,
+            res=int(args.get("res", 32)),
+            views=tuple(args.get("views", ("front", "top", "right"))))
     raise AttaError(
         "unknown_probe",
         "unknown probe %r" % op,
         path="probe",
         fix="use bbox/topology/metrology/wall/dihedral/curvature/mass/"
-            "raycast/silhouette/section/clearance/interference/nearest/inside",
+            "raycast/silhouette/section/clearance/interference/nearest/inside/form",
     )
 
 
@@ -2200,7 +2215,114 @@ def _version() -> str:
     return __version__
 
 
+# --------------------------------------------------------------------------- #
+# v1.21b1: conjure and design
+# --------------------------------------------------------------------------- #
+
+def conjure(label: str, *, seed: int = 0, style: str = "neutral",
+            size_mm=None, scale: float = 1.0,
+            constraints=None, build: bool = False, quality: str = "draft",
+            name: str | None = None) -> dict:
+    """Invent a plausible parameter set for ``label``, optionally build it.
+
+    This is the answer to "model a rifle magazine" when no real dimensions are
+    available or wanted.  The archetype table supplies the proportions that
+    make the class read correctly; the seed supplies coherent variation; every
+    number comes back tagged ``measured`` / ``archetype`` / ``invented``.
+
+    With ``build=True`` the returned ``build`` hint is evaluated through the
+    feature graph and committed as a normal model, so the result is a real
+    ``model_id`` that ``describe`` / ``verify`` / ``deliver`` accept.
+    """
+    from . import conjure as conjuremod
+
+    t0 = time.perf_counter()
+    plan = conjuremod.conjure(label, seed=seed, style=style, size_mm=size_mm,
+                              scale=scale, constraints=constraints)
+    out = {"conjure": plan, "ms": None}
+    if not build:
+        out["next"] = [
+            "atta_conjure label=%r build=true" % label,
+            "atta_model spec={schema, model:{kind:'graph', features:[%s]}}"
+            % plan["build"].get("op"),
+        ]
+        out["ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
+        return out
+
+    hint = dict(plan["build"])
+    op = str(hint.pop("op", "sdf_blend"))
+    # The build hint carries the invented box as ``size_mm``; the ops want
+    # ``size`` (sdf_blend) or nothing (skeleton, which carries its own joints).
+    box = hint.pop("size_mm", None)
+    if op == "sdf_blend" and "size" not in hint and box is not None:
+        hint["size"] = box
+    spec_obj = {
+        "schema": specmod.SCHEMA,
+        "name": str(name or plan["archetype"]["key"]),
+        "model": {
+            "kind": "graph",
+            "output": "body",
+            "features": [{"id": "body", "op": op, "args": hint}],
+        },
+        "quality": quality,
+        "material": "ceramic",
+        "finish": {},
+        "constraints": {},
+        "assumptions": [
+            "conjured from archetype %r (seed %d, style %s): dimensions are "
+            "invented, not measured"
+            % (plan["archetype"]["key"], int(seed), style),
+        ],
+    }
+    built = model(spec=spec_obj, quality=quality, name=name)
+    out["model"] = built.get("model")
+    out["model_id"] = built.get("model_id")
+    out["facts"] = built.get("facts")
+    out["provenance"] = plan["provenance"]
+    out["notes"] = plan["notes"]
+    out["next"] = [
+        "atta_describe model_id=%s" % built.get("model_id"),
+        "atta_verify model_id=%s" % built.get("model_id"),
+    ]
+    out["ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
+    return out
+
+
+def design(model_id: str | None = None, *, rules=None, target_size_mm=None,
+           min_wall_mm: float = 0.8, max_overhang_deg: float = 45.0,
+           min_draft_deg: float = 1.0, tool_radius_mm: float = 3.0,
+           readability_threshold: float = 0.90) -> dict:
+    """Run the design rules on a built model.
+
+    ``verify`` says whether the solid is valid; this says whether the *form*
+    reads and whether it can be made.  A model can pass verify and still fail
+    here, which is the gap this closes.
+    """
+    from . import design as designmod
+
+    t0 = time.perf_counter()
+    rec, mesh, _ = _load(model_id)
+    report = designmod.design_report(
+        mesh, target_size_mm=target_size_mm, rules=rules,
+        min_wall_mm=min_wall_mm, max_overhang_deg=max_overhang_deg,
+        min_draft_deg=min_draft_deg, tool_radius_mm=tool_radius_mm,
+        readability_threshold=readability_threshold)
+    report["model_id"] = rec.get("model_id")
+    report["name"] = rec.get("name")
+    report["ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
+    return report
+
+
+def archetypes() -> dict:
+    """The conjure archetype table, for ``atta_catalog``."""
+    from . import conjure as conjuremod
+    return {"archetypes": conjuremod.archetypes(),
+            "styles": dict(conjuremod.STYLES),
+            "human_scale_mm": dict(conjuremod.HUMAN_SCALE_MM),
+            "method": conjuremod.METHOD}
+
+
 __all__ = [
     "QUALITY", "doctor", "catalog", "spec", "model", "variant", "describe",
-    "verify", "preview", "deliver", "run",
+    "verify", "preview", "deliver", "run", "conjure", "design", "archetypes",
 ]
