@@ -25,7 +25,7 @@ This module is the repair bench:
 ``laplacian_smooth``
     Taubin smoothing (lambda/mu) — smooths without shrinking.
 ``quadric_decimate``
-    Garland-Heckbert edge-collapse decimation to a target face count.
+    Native tolerance-bounded simplification toward a target face count.
 
 All functions take and return :class:`~atta.mesh.Mesh` in metres, and none of
 them depend on Blender.
@@ -359,7 +359,8 @@ def _signed_volume(mesh):
     f = np.asarray(mesh.faces, dtype=np.int64)
     if len(f) == 0:
         return 0.0, np.zeros(3)
-    a, b, c = v[f[:, 0]], v[f[:, 1]], v[f[:, 2]]
+    origin = v[f[0, 0]]
+    a, b, c = v[f[:, 0]] - origin, v[f[:, 1]] - origin, v[f[:, 2]] - origin
     vol = float(np.sum(np.einsum("ij,ij->i", a, np.cross(b, c))) / 6.0)
     return vol, np.zeros(3)
 
@@ -571,101 +572,159 @@ def laplacian_smooth(mesh: Mesh, *, iterations=10, lam=0.5, mu=-0.53,
                      preserve_boundary=True) -> Mesh:
     """Taubin smoothing: low-pass with no volume loss.
 
-    Plain Laplacian smoothing shrinks a mesh.  Taubin alternates a positive
-    step ``lam`` with a negative step ``mu`` whose magnitude is slightly larger
-    (``|mu| > lam``), which cancels the shrinkage.  The classic pair is
-    ``lam=0.5, mu=-0.53``.
-
-    Note the loop below applies *both* steps per iteration to the same starting
-    positions; applying them cumulatively is what makes the volume collapse.
+    Plain Laplacian smoothing shrinks a mesh. Taubin alternates a positive
+    step ``lam`` with a negative step ``mu`` to reduce that shrinkage; it does
+    not exactly conserve volume. The classic pair is ``lam=0.5, mu=-0.53``.
+    Each step recomputes the Laplacian at the updated positions.
     """
     v = np.asarray(mesh.verts, dtype=np.float64).copy()
     faces = np.asarray(mesh.faces, dtype=np.int64)
     if len(faces) == 0:
         return mesh.copy()
+    from scipy.sparse import coo_matrix
+
     edges = _unique_edges(mesh)
     n_v = len(v)
-    nbr = [[] for _ in range(n_v)]
-    for a, b in edges:
-        nbr[int(a)].append(int(b))
-        nbr[int(b)].append(int(a))
-    boundary = set()
+    rows = np.concatenate([edges[:, 0], edges[:, 1]])
+    cols = np.concatenate([edges[:, 1], edges[:, 0]])
+    degree = np.bincount(rows, minlength=n_v)
+    movable = degree > 0
     if preserve_boundary:
-        for loop in boundary_loops(mesh):
-            boundary.update(loop)
-
-    # Precompute the average-neighbour vector as a sparse operator applied by
-    # index; this keeps the two Taubin steps independent of each other.
-    movable = np.array([i for i in range(n_v)
-                        if i not in boundary and nbr[i]], dtype=np.int64)
-    if len(movable) == 0:
+        halfedges = np.sort(_face_edges(faces), axis=1)
+        unique, counts = np.unique(halfedges, axis=0, return_counts=True)
+        movable[unique[counts == 1].ravel()] = False
+    if not np.any(movable):
         return mesh.copy()
-
-    def avg_of(pos):
-        out = pos.copy()
-        for i in movable:
-            out[i] = pos[nbr[i]].mean(axis=0)
-        return out
+    weights = 1.0 / np.maximum(degree[rows], 1)
+    average = coo_matrix((weights, (rows, cols)), shape=(n_v, n_v)).tocsr()
 
     for _ in range(max(1, int(iterations))):
-        lap = avg_of(v) - v
-        v = v + float(lam) * lap          # positive step
-        lap = avg_of(v) - v
-        v = v + float(mu) * lap           # negative step, same base
+        lap = average @ v - v
+        v[movable] += float(lam) * lap[movable]
+        lap = average @ v - v
+        v[movable] += float(mu) * lap[movable]
     return Mesh(v, faces.copy(), dict(mesh.meta))
 
 
-def quadric_decimate(mesh: Mesh, target_faces: int) -> Mesh:
-    """Simplify to ``target_faces`` by greedy shortest-edge collapse.
+def quadric_decimate(mesh: Mesh, target_faces: int, *, max_error=None,
+                     max_iterations=12) -> Mesh:
+    """Simplify a solid toward a face target within a surface error budget.
 
-    A full Garland-Heckbert implementation needs per-vertex quadrics and a
-    priority queue; this greedy version collapses the shortest edge whose
-    collapse keeps the mesh manifold, which is fast, stable, and good enough
-    for preview geometry.  It preserves the silhouette because it never moves
-    a vertex far.
+    The historical name is retained for callers; the implementation uses
+    Manifold's native tolerance simplifier, not quadric error metrics. Lengths
+    are metres. The default budget is 0.2% of the bounding-box diagonal; use an
+    explicit ``max_error`` for thin walls or dimensional interfaces.
+
+    The target is best effort: topology and error take priority over face
+    count. Unsupported/open inputs and rejected results are returned unchanged
+    with a reason in ``meta['decimation']``. No positional weld is performed.
     """
-    target = max(4, int(target_faces))
-    out = mesh.copy()
-    guard = 0
-    while len(out.faces) > target and guard < 10 * len(mesh.faces):
-        guard += 1
-        edges = _unique_edges(out)
-        if len(edges) == 0:
-            break
-        v = out.verts
-        lengths = np.linalg.norm(v[edges[:, 0]] - v[edges[:, 1]], axis=1)
-        order = np.argsort(lengths)
-        collapsed = False
-        for idx in order[:max(1, len(order) // 8)]:
-            a, b = int(edges[idx, 0]), int(edges[idx, 1])
-            trial = _collapse_edge(out, a, b)
-            if trial is None:
-                continue
-            topo = trial.topology()
-            if topo["non_manifold_edges"] == 0 and topo["n_components"] <= 1:
-                out = trial
-                collapsed = True
-                break
-        if not collapsed:
-            break
-    return out
+    try:
+        target = max(4, int(target_faces))
+        iterations = int(max_iterations)
+        error = (float(mesh.bbox()["diag"]) * 0.002 if max_error is None
+                 else float(max_error))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise AttaError("bad_arg", "invalid simplification budget",
+                        path="repair.decimate",
+                        fix="pass a face count and finite nonnegative max_error in metres") from exc
+    if not math.isfinite(error) or error < 0 or not 1 <= iterations <= 32:
+        raise AttaError("bad_arg", "invalid simplification budget",
+                        path="repair.decimate",
+                        fix="use max_error >= 0 and max_iterations in 1..32")
+    if not np.all(np.isfinite(mesh.verts)):
+        raise AttaError("bad_arg", "mesh vertices must be finite",
+                        path="repair.decimate", fix="remove non-finite coordinates")
 
+    report = {
+        "method": "manifold_tolerance", "units": "m",
+        "input_faces": len(mesh.faces), "target_faces": target,
+        "max_error": error, "tolerance": 0.0, "evaluations": 0,
+        "error_bound_kind": "backend_surface_tolerance",
+    }
 
-def _collapse_edge(mesh: Mesh, a: int, b: int):
-    v = np.asarray(mesh.verts, dtype=np.float64).copy()
-    faces = np.asarray(mesh.faces, dtype=np.int64).copy()
-    v[a] = (v[a] + v[b]) * 0.5
-    faces[faces == b] = a
-    keep = ((faces[:, 0] != faces[:, 1]) & (faces[:, 1] != faces[:, 2])
-            & (faces[:, 0] != faces[:, 2]))
-    faces = faces[keep]
-    if len(faces) < 4:
-        return None
-    key = np.sort(faces, axis=1)
-    _, idx = np.unique(key, axis=0, return_index=True)
-    faces = faces[np.sort(idx)]
-    used, inv = np.unique(faces.ravel(), return_inverse=True)
-    return Mesh(v[used], inv.reshape(-1, 3), dict(mesh.meta))
+    def finish(result, reason, tolerance=0.0):
+        result = result.copy()
+        result.meta["decimation"] = {
+            **report, "output_faces": len(result.faces),
+            "target_reached": len(result.faces) <= target,
+            "reason": reason, "tolerance": float(tolerance),
+        }
+        return result
+
+    if len(mesh.faces) <= target:
+        return finish(mesh, "already_within_target")
+    if error == 0:
+        return finish(mesh, "zero_error_budget")
+    before = mesh.topology()
+    if not before["closed"] or before["degenerate_faces"]:
+        return finish(mesh, "input_not_closed_manifold")
+
+    try:
+        import manifold3d
+    except ImportError:
+        return finish(mesh, "backend_unavailable")
+    if not hasattr(manifold3d, "Mesh64"):
+        return finish(mesh, "double_precision_backend_unavailable")
+
+    # Centre before import: Manifold's numeric tolerance also depends on the
+    # coordinate magnitude, whereas the user's budget describes this object.
+    origin = np.asarray(mesh.bbox()["center"], dtype=np.float64)
+    verts = np.array(mesh.verts - origin, dtype=np.float64, order="C", copy=True)
+    faces = np.array(mesh.faces, dtype=np.uint64, order="C", copy=True)
+    try:
+        solid = manifold3d.Manifold(manifold3d.Mesh64(
+            vert_properties=verts, tri_verts=faces))
+        if solid.status() != manifold3d.Error.NoError or solid.is_empty():
+            return finish(mesh, "backend_rejected_input")
+        import_error = float(solid.get_tolerance())
+        roundoff = float(np.max(np.abs(np.spacing(mesh.verts)))) * 2.0
+        available = error - import_error - roundoff
+        if available <= import_error:
+            return finish(mesh, "below_backend_precision")
+        signature = sorted(part.genus() for part in solid.decompose())
+
+        def candidate(tolerance):
+            report["evaluations"] += 1
+            value = solid.simplify(float(tolerance))
+            if (value.status() != manifold3d.Error.NoError or value.is_empty()
+                    or sorted(part.genus() for part in value.decompose()) != signature):
+                return None
+            return value, value.num_tri(), float(tolerance)
+
+        best = candidate(available)
+        if best is None:
+            return finish(mesh, "topology_guard")
+        if best[1] <= target:
+            low, high = import_error, available
+            for _ in range(iterations - 1):
+                mid = (low + high) * 0.5
+                trial = candidate(mid)
+                if trial is not None and trial[1] <= target:
+                    best, high = trial, mid
+                else:
+                    low = mid
+        if best[1] >= len(mesh.faces):
+            return finish(mesh, "no_reduction_within_budget")
+        raw = best[0].to_mesh64()
+        result = Mesh(np.asarray(raw.vert_properties)[:, :3] + origin,
+                      np.asarray(raw.tri_verts, dtype=np.int64), dict(mesh.meta))
+    except (RuntimeError, ValueError, TypeError, AttributeError) as exc:
+        report["backend_error"] = str(exc)
+        return finish(mesh, "backend_failed")
+
+    after = result.topology()
+    if (not after["closed"] or after["degenerate_faces"]
+            or after["n_components"] != before["n_components"]
+            or after["genus"] != before["genus"]):
+        return finish(mesh, "topology_guard")
+    old_volume = mesh.volume()
+    report["topology_preserved"] = True
+    report["volume_relative_change"] = ((result.volume() - old_volume) / old_volume
+                                         if old_volume > 0 else None)
+    report["surface_error_bound"] = best[2] + import_error + roundoff
+    return finish(result, "target_reached" if best[1] <= target
+                  else "error_budget_limited", best[2])
 
 
 # ---------------------------------------------------------------- pipeline

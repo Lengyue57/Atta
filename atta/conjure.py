@@ -19,6 +19,9 @@ its provenance:
     A proportion from the built-in table for this object class.
 ``invented``
     A value derived from the seed and the archetype's variation range.
+``derived``
+    A transformed or constructed value; scale and bounds never turn a guess
+    into a measurement. ``provenance_detail`` preserves its source and operations.
 
 That tagging is the honest part: an agent can tell the user which numbers are
 real and which were invented to look right, and ``verify`` can still gate the
@@ -43,6 +46,7 @@ numbers.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import math
 
@@ -411,7 +415,7 @@ def archetype(name: str):
     ``conjure`` is that a made-up thing still gets a plausible body.
     """
     key, how = _match(name)
-    return key, dict(ARCHETYPES[key]), how
+    return key, copy.deepcopy(ARCHETYPES[key]), how
 
 
 def conjure(label: str, *, seed: int = 0, style: str = "neutral",
@@ -469,31 +473,56 @@ def conjure(label: str, *, seed: int = 0, style: str = "neutral",
         notes.append("size from archetype %s jittered +-%.0f%% (seed %d)"
                      % (base.tolist(), variation * 100.0, int(seed)))
 
-    size = size * float(scale)
-    if scale != 1.0:
-        provenance["size_mm"] = "measured"
-        notes.append("global scale %.4f applied" % float(scale))
+    try:
+        factor = float(scale)
+    except (TypeError, ValueError):
+        factor = float("nan")
+    if not math.isfinite(factor) or factor <= 0.0:
+        raise AttaError("bad_arg", "scale must be finite and positive",
+                        path="scale", fix="pass scale > 0")
+    source_size = size.copy()
+    size = size * factor
+    operations = []
+    if factor != 1.0:
+        operations.append({"op": "scale", "factor": factor})
+        notes.append("global scale %.4f applied; source is not a measurement"
+                     % factor)
 
-    # --- constraints clamp the invented box
+    # Bounds are constraints, never evidence that an invented length was measured.
     cons = dict(constraints or {})
-    if cons.get("max_mm") is not None:
-        cap = np.asarray(cons["max_mm"], dtype=np.float64).reshape(-1)
-        if cap.shape == (3,):
-            shrink = np.minimum(1.0, cap / np.maximum(size, 1e-9))
-            if float(shrink.min()) < 1.0:
-                size = size * shrink
-                provenance["size_mm"] = "measured"
-                notes.append("clamped to max_mm %s (factor %.3f)"
-                             % (cap.tolist(), float(shrink.min())))
-    if cons.get("min_mm") is not None:
-        floor = np.asarray(cons["min_mm"], dtype=np.float64).reshape(-1)
-        if floor.shape == (3,):
-            grow = np.maximum(1.0, floor / np.maximum(size, 1e-9))
-            if float(grow.max()) > 1.0:
-                size = size * grow
-                provenance["size_mm"] = "measured"
-                notes.append("raised to min_mm %s (factor %.3f)"
-                             % (floor.tolist(), float(grow.max())))
+    bounds = {}
+    for name in ("min_mm", "max_mm"):
+        if cons.get(name) is None:
+            continue
+        try:
+            bound = np.asarray(cons[name], dtype=np.float64).reshape(-1)
+        except (TypeError, ValueError):
+            bound = np.array([])
+        if bound.shape != (3,) or not np.isfinite(bound).all() or np.any(bound <= 0):
+            raise AttaError("bad_arg", "%s must be three positive finite lengths" % name,
+                            path="constraints." + name,
+                            fix="pass [x,y,z] in mm")
+        bounds[name] = bound
+    if ("min_mm" in bounds and "max_mm" in bounds
+            and np.any(bounds["min_mm"] > bounds["max_mm"])):
+        raise AttaError("infeasible_constraints", "min_mm exceeds max_mm",
+                        path="constraints", fix="make min_mm <= max_mm on every axis")
+    before_bounds = size.copy()
+    if "max_mm" in bounds:
+        size = np.minimum(size, bounds["max_mm"])
+    if "min_mm" in bounds:
+        size = np.maximum(size, bounds["min_mm"])
+    if not np.array_equal(size, before_bounds):
+        operations.append({"op": "constrain", "bounds": {
+            k: v.tolist() for k, v in bounds.items()}})
+        notes.append("box adjusted to caller bounds; values are derived, not measured")
+    source = provenance["size_mm"]
+    if operations:
+        provenance["size_mm"] = "derived"
+    provenance_detail = {"size_mm": {
+        "source": source, "source_value_mm": source_size.tolist(),
+        "operations": operations, "measured": bool(source == "measured" and not operations),
+    }}
 
     # --- ratios, style-modulated
     ratios = {}
@@ -510,8 +539,24 @@ def conjure(label: str, *, seed: int = 0, style: str = "neutral",
                       "apron", "rim", "floor_height", "seat_depth"):
             ratios[name] = round(v * vec["bulk"], 4)
         else:
-            ratios[name] = round(v * (0.9 + 0.2 * vec["taper"]), 4)
-        provenance["ratios.%s" % name] = "archetype"
+            ratios[name] = round(v * (0.8 + 0.2 * vec["taper"]), 4)
+        provenance["ratios.%s" % name] = (
+            "archetype" if ratios[name] == value else "derived")
+        provenance_detail["ratios.%s" % name] = {
+            "source": "archetype", "source_value": value, "style": style}
+    # These are partitions of a single length, not independent scale factors.
+    partitions = {"knife": ("blade", "handle"),
+                  "sword": ("blade", "guard", "grip", "pommel"),
+                  "mushroom": ("cap", "stem")}
+    fields = partitions.get(key, ())
+    if fields:
+        weights = [float(arch["ratios"][k]) for k in fields]
+        weights[0] *= vec["taper"]
+        total_weight = sum(weights)
+        for name, weight in zip(fields, weights):
+            ratios[name] = weight / total_weight
+            provenance["ratios.%s" % name] = (
+                "archetype" if style == "neutral" else "derived")
     notes.append("style %r modulated ratios (bulk %.2f, taper %.2f, detail %.2f)"
                  % (style, vec["bulk"], vec["taper"], vec["detail"]))
 
@@ -523,9 +568,13 @@ def conjure(label: str, *, seed: int = 0, style: str = "neutral",
         parts[name] = {
             "share": round(frac, 4),
             "size_mm": [round(float(v) * frac, 3) for v in size],
-            "volume_share": round(frac ** 3, 4),
+            "volume_share": round(frac, 4),
+            "exact": False,
+            "note": "conceptual share and size hint, not a measured part bbox or volume",
         }
-        provenance["parts.%s" % name] = "archetype"
+        provenance["parts.%s.share" % name] = "archetype"
+        provenance["parts.%s.size_mm" % name] = "derived"
+        provenance["parts.%s.volume_share" % name] = "archetype"
 
     # --- human-scale anchors
     anchors = {}
@@ -551,6 +600,27 @@ def conjure(label: str, *, seed: int = 0, style: str = "neutral",
 
     # --- derived recommendations a builder can use directly
     build = _build_hint(key, arch, size, ratios, vec, rng)
+    build_constraints = dict(build.get("constraints", {}))
+    if bounds:
+        build_constraints["bbox"] = {
+            axis: {k.replace("_mm", ""): float(v[i]) for k, v in bounds.items()}
+            for i, axis in enumerate("xyz")}
+    # Every numeric construction value is derived from the labelled plan, not
+    # independently measured. Record leaves so agents need not infer provenance.
+    def tag_build(value, path="build"):
+        if isinstance(value, dict):
+            for name, child in value.items():
+                tag_build(child, path + "." + str(name))
+        elif isinstance(value, (list, tuple)):
+            for i, child in enumerate(value):
+                tag_build(child, path + "[%d]" % i)
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            provenance[path] = "derived"
+    tag_build(build)
+    assumptions = [
+        "conjured from archetype %r (seed %d, style %s); size source: %s; "
+        "construction geometry and conceptual part shares are derived, not measured"
+        % (key, int(seed), style, provenance["size_mm"])]
 
     return {
         "schema": "atta.conjure/v1",
@@ -565,6 +635,9 @@ def conjure(label: str, *, seed: int = 0, style: str = "neutral",
         "anchors": anchors,
         "build": build,
         "provenance": provenance,
+        "provenance_detail": provenance_detail,
+        "constraints": build_constraints,
+        "assumptions": assumptions,
         "notes": notes,
         "units": "mm",
         "exact": False,
@@ -616,7 +689,10 @@ def _build_hint(key, arch, size, ratios, vec, rng):
                      "center_mm": [0, 0, round(sz * 0.30, 2)]},
                 ]}
 
-    if key in ("mug", "bottle", "tool_box", "helmet", "grip", "magazine"):
+    if key in ("mug", "bottle", "helmet"):
+        return _shell_graph(key, size, ratios, vec)
+
+    if key in ("tool_box", "grip", "magazine"):
         # Hollow shell + one or two functional features.  The shell is made by
         # subtracting a slightly smaller inner volume, which is the honest way
         # to get a wall: `shell_mm` on an SDF field is a different operation
@@ -674,6 +750,102 @@ def _build_hint(key, arch, size, ratios, vec, rng):
                               round(sz * 0.9, 2)],
                   "round_mm": round(min(size) * 0.08, 2)})
     return hint
+
+
+def _shell_graph(key, size, ratios, vec):
+    """Explicit closed wall sections: no coincident SDF mouth or sealed neck.
+
+    Reuses the same revolve/sweep construction as the curated product recipes,
+    without their fixed human-scale parameter bounds silently clamping a plan.
+    ``wall`` is a nominal budget; verification still measures the resulting mesh.
+    """
+    sx, sy, h = (float(v) for v in size)
+    wall = min(max(0.3, min(size) * ratios["wall"]), min(size) * 0.10)
+    features = []
+    if key == "helmet":
+        # An ellipsoidal crown, closed above and open DOWN for the wearer's head.
+        # Two nested profiles share only the annular rim, never a sealed bubble.
+        r = 0.5 * sx
+        theta = np.linspace(0.0, math.pi / 2, 33)
+        outer = np.column_stack([r * np.cos(theta), h * np.sin(theta)])
+        inner = np.column_stack([(r - wall) * np.cos(theta[::-1]),
+                                 (h - wall) * np.sin(theta[::-1])])
+        outer[-1, 0] = 0.0
+        inner[0, 0] = 0.0
+        profile = np.vstack([outer, inner, outer[:1]])
+        features.append({"id": "crown", "op": "revolve", "args": {
+            "profile_rz": np.round(profile, 6).tolist(), "segments": 64}})
+        # Start with the X radius, then stretch only Y. Budget for compression.
+        features.append({"id": "body", "op": "transform", "inputs": ["crown"],
+                         "args": {"scale": [1.0, sy / sx, 1.0]}})
+        return {"kind": "graph", "features": features, "output": "body",
+                "size_mm": list(map(float, size)), "nominal_wall_mm": wall,
+                "opening": "-z", "constraints": {"genus": 0, "n_components": 1,
+                    "min_wall_mm": wall * min(1.0, sy / sx) * 0.7}}
+
+    if key == "mug":
+        radius = min(sy * 0.5, sx / 2.7)
+        # Taper changes the silhouette while preserving the overall size.
+        top = radius * (1.0 - 0.12 * (vec["taper"] - 1.0))
+        z = np.linspace(0.0, h, 33)
+        r = radius * (0.91 + 0.09 * np.sin(math.pi * z / h))
+        r += (top - radius * 0.91) * (z / h) ** 5
+        r = np.minimum(r, radius)
+    else:
+        radius = min(sx, sy) * 0.5
+        neck_fraction = min(0.50, max(0.18, ratios["neck"]))
+        shoulder = min(0.35, max(0.12, ratios["shoulder"]))
+        z = h * np.array([0.0, 0.08, 0.60, 1.0 - shoulder, 0.92, 1.0])
+        r = radius * np.array([0.94, 1.0, 1.0, 0.92,
+                               neck_fraction, neck_fraction * 1.10])
+    base_t = min(h * 0.15, max(wall * 1.5, h * 0.035))
+    inner_z = np.unique(np.r_[base_t, z[z > base_t]])
+    # A radial subtraction underestimates the normal thickness on shoulders.
+    # Compensate by the local profile slope instead of calling wall=r_out-r_in.
+    slopes = np.abs(np.diff(r) / np.diff(z))
+    budget = np.maximum(np.r_[slopes[0], slopes], np.r_[slopes, slopes[-1]])
+    inset = wall * np.sqrt(1.0 + budget ** 2)
+    inner_r = np.interp(inner_z, z, r - inset)
+    if np.any(inner_r <= wall * 0.25) or base_t >= h:
+        raise AttaError("infeasible_shell", "wall budget would close the cavity",
+                        path="size_mm", fix="increase the cross-section or reduce wall")
+    profile = np.vstack([np.column_stack([r, z]),
+                         np.column_stack([inner_r[::-1], inner_z[::-1]]),
+                         [[0.0, base_t], [0.0, 0.0]]])
+    features.append({"id": "vessel", "op": "revolve", "args": {
+        "profile_rz": np.round(profile, 6).tolist(), "segments": 64}})
+    output = "vessel"
+    if key == "bottle":
+        features.append({"id": "body", "op": "transform", "inputs": [output],
+                         "args": {"scale": [sx / (2 * radius), sy / (2 * radius), 1.0]}})
+        output = "body"
+    if key == "mug":
+        tube = max(wall, sy * 0.05) * (0.9 + 0.1 * vec["bulk"])
+        z1, z2 = h * 0.76, h * 0.28
+        r1, r2 = np.interp([z1, z2], z, r)
+        reach = sx - radius - tube
+        if reach <= max(r1, r2) + 2 * tube:
+            raise AttaError("infeasible_shell", "mug handle has no readable gap",
+                            path="size_mm", fix="increase X relative to the body diameter")
+        depth = min(wall * 0.45, tube * 0.45)
+        arc = np.linspace(0, math.pi, 41)
+        attach = (r1 + r2) * 0.5 - depth
+        path = np.column_stack([
+            attach + (reach - attach) * np.sin(arc), np.zeros(len(arc)),
+            (z1 + z2) * 0.5 + (z1 - z2) * 0.5 * np.cos(arc)])
+        path[0, 0], path[-1, 0] = r1 - depth, r2 - depth
+        angle = np.linspace(0, 2 * math.pi, 16, endpoint=False)
+        features.append({"id": "handle", "op": "sweep", "args": {
+            "section_xy": np.round(np.column_stack([tube * np.cos(angle),
+                                                     tube * np.sin(angle)]), 6).tolist(),
+            "path": np.round(path, 6).tolist()}})
+        features.append({"id": "body", "op": "union", "inputs": [output, "handle"]})
+        output = "body"
+    return {"kind": "graph", "features": features, "output": output,
+            "size_mm": list(map(float, size)), "nominal_wall_mm": wall,
+            "opening": "+z", "constraints": {
+                "genus": 1 if key == "mug" else 0, "n_components": 1,
+                "min_wall_mm": wall * 0.7}}
 
 
 def _creature_hint(key, size, ratios, rng):
@@ -834,14 +1006,16 @@ def _hardware_hint(key, size, ratios, rng):
 
     if key == "knife":
         L = sx
+        blade = L * ratios["blade"]
+        handle = L * ratios["handle"]
         prims.append({"kind": "box",
-                      "size_mm": [round(L * 0.58, 2), round(sy * 0.9, 2),
-                                  round(sz * 0.35, 2)],
-                      "center_mm": [round(L * 0.21, 2), 0, 0]})
+                      "size_mm": [round(blade, 2), round(sy * 0.9, 2),
+                                  round(sy * ratios["blade_thickness"], 2)],
+                      "center_mm": [round(-L * 0.5 + handle + blade * 0.5, 2), 0, 0]})
         prims.append({"kind": "box",
-                      "size_mm": [round(L * 0.42, 2), round(sy * 0.7, 2),
+                      "size_mm": [round(handle, 2), round(sy * 0.7, 2),
                                   round(sz * 0.75, 2)],
-                      "center_mm": [round(-L * 0.29, 2), 0, 0],
+                      "center_mm": [round(-L * 0.5 + handle * 0.5, 2), 0, 0],
                       "round_mm": round(sz * 0.25, 2)})
         return {"op": "sdf_blend", "size_mm": [round(sx, 2), round(sy, 2),
                                                round(sz, 2)],
@@ -849,24 +1023,28 @@ def _hardware_hint(key, size, ratios, rng):
 
     if key == "sword":
         L, W, T = sx, sy, sz
-        # Blade: a long tapered box; guard: a wide cross bar; grip and pommel.
+        # The partition controls actual stations, not just unused metadata.
+        blade_len = L * ratios["blade"]
+        guard_len = L * ratios["guard"]
+        grip_len = L * ratios["grip"]
+        guard_x = L * 0.5 - blade_len - guard_len * 0.5
         prims.append({"kind": "box",
-                      "size_mm": [round(L * 0.72, 2), round(W * 0.20, 2),
-                                  round(T * 0.55, 2)],
-                      "center_mm": [round(L * 0.14, 2), 0, 0]})
+                      "size_mm": [round(blade_len, 2), round(L * ratios["blade_width"], 2),
+                                  round(L * ratios["blade_thickness"], 2)],
+                      "center_mm": [round(L * 0.5 - blade_len * 0.5, 2), 0, 0]})
         prims.append({"kind": "box",
-                      "size_mm": [round(L * 0.035, 2), round(W * 0.92, 2),
+                      "size_mm": [round(guard_len, 2), round(W * 0.92, 2),
                                   round(T * 0.85, 2)],
-                      "center_mm": [round(-L * 0.23, 2), 0, 0],
+                      "center_mm": [round(guard_x, 2), 0, 0],
                       "round_mm": round(T * 0.20, 2)})
         prims.append({"kind": "cylinder",
                       "radius_mm": round(W * 0.045, 2),
-                      "height_mm": round(L * 0.16, 2),
-                      "center_mm": [round(-L * 0.33, 2), 0, 0],
+                      "height_mm": round(grip_len, 2),
+                      "center_mm": [round(guard_x - guard_len * 0.5 - grip_len * 0.5, 2), 0, 0],
                       "axis": "x"})
         prims.append({"kind": "sphere",
                       "radius_mm": round(W * 0.075, 2),
-                      "center_mm": [round(-L * 0.42, 2), 0, 0]})
+                      "center_mm": [round(guard_x - guard_len * 0.5 - grip_len, 2), 0, 0]})
         return {"op": "sdf_blend", "size_mm": [round(sx, 2), round(sy, 2),
                                                round(sz, 2)],
                 "blend_mm": round(T * 0.25, 2), "primitives": prims}

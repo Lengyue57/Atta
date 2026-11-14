@@ -437,15 +437,25 @@ def gordon(u_curves, v_curves, u_samples=32, v_samples=32, flip=False) -> Mesh:
 
 
 def _vertex_normals(verts, tris):
+    # Normalise local edge coordinates before the area-weighted sum.  A fixed
+    # square-metre epsilon turns every microscopic tilted patch into a +Z
+    # extrusion; a global spatial weld is equally destructive at small scales.
     vn = np.zeros_like(verts)
     a, b, c = verts[tris[:, 0]], verts[tris[:, 1]], verts[tris[:, 2]]
-    fn = np.cross(b - a, c - a)
+    ab, ac = b - a, c - a
+    scale = float(max(np.max(np.abs(ab)), np.max(np.abs(ac))))
+    if not math.isfinite(scale) or scale <= 0:
+        raise AttaError("bad_arg", "surface has no finite area", path="surface",
+                        fix="provide non-degenerate triangles")
+    fn = np.cross(ab / scale, ac / scale)
     for k in range(3):
         np.add.at(vn, tris[:, k], fn)
     ln = np.linalg.norm(vn, axis=1)
-    good = ln > _EPS
-    vn[good] /= ln[good, None]
-    vn[~good] = (0.0, 0.0, 1.0)
+    used = np.unique(tris)
+    if np.any(~np.isfinite(ln[used])) or np.any(ln[used] <= np.finfo(float).tiny):
+        raise AttaError("bad_arg", "surface normals cancel or are degenerate",
+                        path="surface", fix="orient the patch consistently and remove degenerate faces")
+    vn[used] /= ln[used, None]
     return vn
 
 
@@ -465,7 +475,10 @@ def thicken(surface, thickness, offset=0.0) -> Mesh:
     if topology(surface)["closed"]:
         raise AttaError("bad_arg", "thicken needs an open surface", path="surface",
                         fix="use boolean shells for closed solids")
-    off = max(-1.0, min(1.0, float(offset)))
+    off = float(offset)
+    if not math.isfinite(off) or not -1.0 <= off <= 1.0:
+        raise AttaError("bad_arg", "offset must be finite and in [-1, 1]",
+                        path="offset", fix="use offset=0 for a centred shell")
     verts = surface.verts
     faces = surface.faces
     if len(faces) == 0:
@@ -475,6 +488,12 @@ def thicken(surface, thickness, offset=0.0) -> Mesh:
     half = 0.5 * t
     top = verts + vn * (half * (1.0 + off))
     bot = verts + vn * (-half * (1.0 - off))
+    used = np.unique(faces)
+    actual_thickness = np.linalg.norm(top[used] - bot[used], axis=1)
+    if (not np.isfinite(top).all() or not np.isfinite(bot).all()
+            or np.any(np.abs(actual_thickness / t - 1.0) > 1e-3)):
+        raise AttaError("thicken_precision", "thickness cannot be represented at these coordinates",
+                        path="thickness", fix="thicken in local coordinates before placement")
     n = len(verts)
     all_verts = np.vstack([top, bot])
     out_faces = [[int(a), int(b), int(c)] for a, b, c in faces]
@@ -492,9 +511,13 @@ def thicken(surface, thickness, offset=0.0) -> Mesh:
                         fix="pass an open patch (coons/gordon)")
     for a, b in boundary:
         out_faces += [[b, a, n + a], [b, n + a, n + b]]
-    mesh = Mesh(all_verts, np.asarray(out_faces, dtype=np.int64),
-                {"kind": "thicken", "thickness": t, "offset": off})
-    mesh = oriented(weld(mesh, 1e-9))
+    meta = dict(surface.meta)
+    meta.update({"kind": "thicken", "open": False, "thickness": t, "offset": off,
+                 "thickening": {"method": "area_weighted_vertex_normals",
+                                "self_intersection_checked": False}})
+    # Top/bottom and side walls already share integer vertex IDs.  Welding is
+    # unnecessary and can collapse legitimate small gaps or separate shells.
+    mesh = oriented(Mesh(all_verts, np.asarray(out_faces, dtype=np.int64), meta))
     if not topology(mesh)["closed"]:
         raise AttaError("thicken_failed", "thickened shell is not closed", path="surface",
                         fix="reduce thickness or increase sampling of the patch")

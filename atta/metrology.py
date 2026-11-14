@@ -32,18 +32,25 @@ def _tri_arrays(v: np.ndarray, f: np.ndarray):
 
 def _face_normals(v: np.ndarray, f: np.ndarray):
     a, b, c = _tri_arrays(v, f)
-    n = np.cross(b - a, c - a)
+    ab, ac = b - a, c - a
+    scale = np.maximum(np.max(np.abs(ab), axis=1), np.max(np.abs(ac), axis=1))
+    safe = np.where(scale > 0, scale, 1.0)
+    n = np.cross(ab / safe[:, None], ac / safe[:, None])
     ln = np.linalg.norm(n, axis=1)
     out = np.zeros_like(n)
-    ok = ln > EPS
+    ok = np.isfinite(ln) & (ln > np.finfo(float).tiny)
     out[ok] = n[ok] / ln[ok, None]
-    return out, 0.5 * ln
+    return out, 0.5 * ln * scale**2
 
 
 def _signed_volume(v: np.ndarray, f: np.ndarray) -> float:
     if len(f) == 0:
         return 0.0
+    # Translate the tetrahedral fan near the mesh before integrating. Without
+    # this, a small part at a large world coordinate loses all volume digits.
+    origin = v[f[0, 0]]
     a, b, c = _tri_arrays(v, f)
+    a, b, c = a - origin, b - origin, c - origin
     return float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum() / 6.0)
 
 
@@ -125,30 +132,38 @@ def _tri_edges(v, f):
 
 # ---------------------------------------------------------------- measures
 
+def _display(value, decimals):
+    """Keep historical rounding at product scale without erasing tiny geometry."""
+    value = float(value)
+    if 0 < abs(value) < 10.0 ** (2 - decimals):
+        return float(format(value, ".12g"))
+    return round(value, decimals)
+
+
 def bbox_mm(mesh: M.Mesh) -> dict:
     b = M.bbox(mesh)
-    out = {k: [round(float(x) * 1000.0, 4) for x in b[k]]
+    out = {k: [_display(float(x) * 1000.0, 4) for x in b[k]]
            for k in ("min", "max", "size", "center")}
-    out["diag_mm"] = round(float(b["diag"]) * 1000.0, 4)
+    out["diag_mm"] = _display(float(b["diag"]) * 1000.0, 4)
     return out
 
 
 def volume_mm3(mesh: M.Mesh) -> float:
-    return round(float(M.volume(mesh)) * 1e9, 6)
+    return _display(float(M.volume(mesh)) * 1e9, 6)
 
 
 def area_mm2(mesh: M.Mesh) -> float:
-    return round(float(M.area(mesh)) * 1e6, 6)
+    return _display(float(M.area(mesh)) * 1e6, 6)
 
 
 def centroid_mm(mesh: M.Mesh) -> list[float]:
-    return [round(float(x) * 1000.0, 4) for x in M.centroid(mesh)]
+    return [_display(float(x) * 1000.0, 4) for x in M.centroid(mesh)]
 
 
 def mass_properties(mesh: M.Mesh, density_kg_m3: float | None = None) -> dict:
     vol_m3 = float(M.volume(mesh))
     out = {
-        "volume_mm3": round(vol_m3 * 1e9, 6),
+        "volume_mm3": _display(vol_m3 * 1e9, 6),
         "centroid_mm": centroid_mm(mesh),
         "density_kg_m3": (None if density_kg_m3 is None
                           else float(density_kg_m3)),
@@ -306,7 +321,9 @@ def vertex_normals(mesh: M.Mesh) -> np.ndarray:
     if len(f) == 0:
         return np.zeros_like(v)
     fn, area = _face_normals(v, f)
-    weighted = fn * area[:, None]
+    # A common normalising area preserves weighting at all physical scales.
+    area_scale = float(area.max())
+    weighted = fn * (area / area_scale if area_scale > 0 else area)[:, None]
     out = np.zeros_like(v)
     for c in range(3):
         out[:, c] = np.bincount(f.ravel(), weights=np.repeat(weighted[:, c], 3),

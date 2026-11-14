@@ -64,45 +64,17 @@ _MAX_RES = 220
 # ---------------------------------------------------------------- field grid
 
 def _field_grid(lo, hi, spacing):
-    """Sample grid covering ``[lo, hi]`` plus a margin, at ``spacing``.
+    """Sample a padded grid, coarsening until the exact shape fits the budget."""
+    from .sdf import fit_spacing
+    from .sdfkit import grid
 
-    Coarsens ``spacing`` automatically when the grid would exceed
-    :data:`_MAX_SAMPLES`.  Marching tets holds the field plus several per-cell
-    index arrays (~50 bytes/sample), so an unbounded grid is an out-of-memory
-    kill rather than a slow build — a long thin form sized by its smallest
-    feature can easily ask for tens of millions of samples.
-    """
-    lo = np.asarray(lo, dtype=np.float64)
-    hi = np.asarray(hi, dtype=np.float64)
-    span = hi - lo
-    spacing = float(spacing)
-
-    def shape_for(sp):
-        margin = 2.5 * sp
-        return tuple(int(math.ceil((span[i] + 2.0 * margin) / sp)) + 1
-                     for i in range(3))
-
-    shape = shape_for(spacing)
-    total = int(np.prod(shape))
-    if total > _MAX_SAMPLES:
-        # Samples scale as spacing^-3; one cube-root step lands on budget.
-        spacing *= (total / float(_MAX_SAMPLES)) ** (1.0 / 3.0)
-        shape = shape_for(spacing)
-        total = int(np.prod(shape))
-    if total > _MAX_SAMPLES:
-        raise AttaError(
-            "form_too_dense",
-            "form needs %d samples at spacing %.4f m" % (total, spacing),
-            path="resolution",
-            fix="increase the smallest radius, or lower resolution")
-    margin = 2.5 * spacing
-    org = lo - margin
-    axes = [org[i] + np.arange(shape[i]) * spacing for i in range(3)]
-    return np.meshgrid(*axes, indexing="ij"), org, spacing
+    spacing = fit_spacing(lo, hi, spacing, _MAX_SAMPLES)
+    X, Y, Z, org = grid(lo, hi, spacing, max_samples=_MAX_SAMPLES)
+    return (X, Y, Z), org, spacing
 
 
 def _isosurface(phi, org, spacing):
-    from .families.lattice import marching_tets
+    from .sdf import marching_tets
     return marching_tets(phi, org, spacing)
 
 
@@ -279,14 +251,18 @@ def skeleton_solid(joints, bones, *, segments=32, blend=0.0, resolution=0):
                         path="joints",
                         fix="increase the radii margin or move the skeleton inward")
 
-    out = M.oriented(_isosurface(phi, org, spacing))
+    samples = int(phi.size)
+    del X, Y, Z, d
+    if resolved:
+        del t, rloc
+    out = _isosurface(phi, org, spacing)
     info = {
         "joints": len(placed),
         "bones": len(bones),
         "pieces": len(placed) + len(bones),
         "blend_mm": round(blend * 1000.0, 4),
         "spacing_mm": round(spacing * 1000.0, 4),
-        "samples": int(np.prod(phi.shape)),
+        "samples": samples,
         "method": METHOD,
         "exact": False,
     }
@@ -422,7 +398,7 @@ def silhouette_solid(views, *, height=None, resolution=0):
                            "views.%s.outline" % key)
         depth = raw.get("depth")
         if depth is None:
-            if height_mm is None:
+            if height is None:
                 raise AttaError("bad_arg",
                                 "view %r needs depth (or pass height)" % key,
                                 path="views.%s.depth" % key,
@@ -499,13 +475,15 @@ def silhouette_solid(views, *, height=None, resolution=0):
                         path="views",
                         fix="check depth_mm and that the outlines enclose an area")
 
-    out = M.oriented(_isosurface(phi, org, spacing))
+    samples = int(phi.size)
+    del X, Y, Z, coords, u, v, w, d2, inside, slab, view_phi
+    out = _isosurface(phi, org, spacing)
     info = {
         "views": [k for k, _, _, _ in prepared],
         "hull": "visual",
         "extents": extents,
         "spacing_mm": round(spacing * 1000.0, 4),
-        "samples": int(np.prod(phi.shape)),
+        "samples": samples,
         "method": METHOD,
         "exact": False,
     }

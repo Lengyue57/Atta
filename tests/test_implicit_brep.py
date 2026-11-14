@@ -72,6 +72,51 @@ def test_brep_step_export_and_delivery(home, tmp_path):
     assert delivered["brep"]["volume_mm3"] == pytest.approx(11214.6, abs=1.0)
 
 
+@pytest.mark.parametrize("case", ["mirror", "align", "params_forward", "partial_polar", "pivot_scale"])
+def test_brep_matches_mesh_graph_semantics(case):
+    pytest.importorskip("build123d")
+    import numpy as np
+    from atta import features
+    graphs = {
+        "mirror": [
+            {"id": "b", "op": "box", "args": {"size": [10, 10, 10], "center": [20, 0, 0]}},
+            {"id": "out", "op": "mirror", "inputs": ["b"], "args": {"plane": "x"}}],
+        "align": [{"id": "out", "op": "box", "args": {"size": [10, 20, 30], "align": "min"}}],
+        "params_forward": [
+            {"id": "out", "op": "transform", "inputs": ["b"], "args": {"translate": [30, 0, 0]}},
+            {"id": "b", "op": "box", "args": {"size": [{"$expr": "w * 2"}, 10, 10]}},
+            # A disconnected mesh-only node must not block STEP for output.
+            {"id": "unused", "op": "subdivide", "inputs": ["b"]}],
+        "partial_polar": [
+            {"id": "b", "op": "box", "args": {"size": [2, 2, 2], "center": [10, 0, 0]}},
+            {"id": "out", "op": "pattern_polar", "inputs": ["b"], "args": {"count": 3, "angle_deg": 180}}],
+        "pivot_scale": [
+            {"id": "b", "op": "box", "args": {"size": [2, 4, 6], "center": [10, 0, 0]}},
+            {"id": "out", "op": "transform", "inputs": ["b"], "args": {
+                "pivot": [5, 1, 2], "scale": 2, "rotate_deg": [20, 30, 40], "translate": [2, 3, 4]}}],
+    }
+    raw = _graph(graphs[case])
+    raw["model"]["params"] = {"w": 10}
+    report = brep.build_graph(raw)
+    mesh = features.evaluate(graphs[case], params={"w": 10}, output="out")
+    bb = report["shape"].bounding_box()
+    assert [bb.min.X, bb.min.Y, bb.min.Z] == pytest.approx(
+        np.asarray(mesh.bbox()["min"]) * 1000, abs=1e-6)
+    assert [bb.max.X, bb.max.Y, bb.max.Z] == pytest.approx(
+        np.asarray(mesh.bbox()["max"]) * 1000, abs=1e-6)
+    assert report["volume_mm3"] == pytest.approx(mesh.volume() * 1e9, rel=1e-6)
+
+
+def test_brep_refuses_cycles_and_open_solids():
+    pytest.importorskip("build123d")
+    with pytest.raises(AttaError, match="cycle"):
+        brep.build_graph(_graph([{"id": "out", "op": "transform", "inputs": ["out"]}]))
+    with pytest.raises(AttaError) as exc:
+        brep.build_graph(_graph([{"id": "out", "op": "cylinder", "args": {
+            "radius": 1, "height": 10, "caps": False}}]))
+    assert exc.value.code == "brep_unsupported"
+
+
 def test_brep_refuses_mesh_only_ops_with_a_fix():
     spec = _graph([{"id": "out", "op": "coons", "args": {
         "edges": [[[0, 0, 0], [10, 0, 0]], [[10, 0, 0], [10, 10, 0]],

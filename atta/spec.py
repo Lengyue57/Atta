@@ -107,6 +107,16 @@ def _is_num(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _is_finite_num(value: Any) -> bool:
+    """Whether a JSON number is representable as a finite kernel float."""
+    if not _is_num(value):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, ValueError, TypeError):
+        return False
+
+
 def _attr(obj: Any, name: str, default: Any = None) -> Any:
     """Read a field from either a dataclass-like object or a dict."""
     if isinstance(obj, Mapping):
@@ -862,7 +872,7 @@ def _prefix_errors(errors: list[dict], prefix: str) -> list[dict]:
 
 def _vec3(raw) -> bool:
     return (isinstance(raw, (list, tuple)) and len(raw) == 3
-            and all(_is_num(x) and math.isfinite(float(x)) for x in raw))
+            and all(_is_finite_num(x) for x in raw))
 
 
 def _validate_transform(raw: Any, path: str, errors: list[dict]) -> None:
@@ -886,11 +896,29 @@ def _validate_transform(raw: Any, path: str, errors: list[dict]) -> None:
         m = raw["matrix"]
         ok = (isinstance(m, (list, tuple)) and len(m) == 4
               and all(isinstance(r, (list, tuple)) and len(r) == 4 for r in m)
-              and all(_is_num(v) and math.isfinite(float(v)) for row in m for v in row))
+              and all(_is_finite_num(v) for row in m for v in row))
         if not ok:
             _err(errors, "bad_transform", path + ".matrix",
                  "matrix must be a 4x4 finite array (translation in mm)",
                  "Provide a row-major 4x4 matrix, or use translate_mm/rotate_deg.")
+        else:
+            # Assembly poses are SE(3): scaling, shear, reflection and
+            # projective matrices would invalidate volumes and port frames.
+            r = [[float(v) for v in row[:3]] for row in m[:3]]
+            orthogonal = all(abs(sum(r[k][i] * r[k][j] for k in range(3))
+                                 - (1.0 if i == j else 0.0)) <= 1e-7
+                             for i in range(3) for j in range(3))
+            det = (r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
+                   - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+                   + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]))
+            affine = all(abs(float(m[3][i]) - v) <= 1e-9
+                         for i, v in enumerate((0, 0, 0, 1)))
+            if not orthogonal or abs(det - 1.0) > 1e-7 or not affine:
+                _err(errors, "bad_transform", path + ".matrix",
+                     "assembly matrix must be a rigid transform (orthonormal "
+                     "rotation, determinant +1, last row [0,0,0,1])",
+                     "Apply scale/mirror inside the part graph; use a rigid "
+                     "placement with translation in millimetres.")
 
 
 def _validate_ports(raw: Any, path: str, errors: list[dict]) -> list[dict]:
@@ -923,17 +951,51 @@ def _validate_ports(raw: Any, path: str, errors: list[dict]) -> list[dict]:
             _err(errors, "bad_port", base + ".origin_mm",
                  "origin_mm must be three finite numbers (mm)",
                  "Use [x, y, z] in millimetres.")
-        for key in ("axis", "normal"):
+        oriented = "x_axis" in port or "tangent" in port
+        if "x_axis" in port and "tangent" in port:
+            _err(errors, "bad_port_frame", base,
+                 "x_axis and tangent are aliases; provide only one",
+                 "Use x_axis to declare the local frame X direction.")
+        if oriented and "axis" not in port and "normal" in port:
+            # Only the new oriented contract inherits normal as Z.  Legacy
+            # normal-only ports keep their historical +Z axis.
+            port["axis"] = copy.deepcopy(port["normal"])
+        directions = {}
+        for key in ("axis", "normal", "x_axis", "tangent"):
             if key in port:
                 v = port[key]
-                if not _vec3(v) or float(sum(float(x) ** 2 for x in v)) <= 1e-18:
+                length = math.hypot(*v) if _vec3(v) else 0.0
+                if not math.isfinite(length) or length <= 1e-9:
                     _err(errors, "bad_port", base + "." + key,
-                         "%s must be a non-zero 3-vector" % key,
+                         "%s must be a finite non-zero 3-vector" % key,
                          "Use a direction such as [0,0,1].")
-        if "radius_mm" in port and (not _is_num(port["radius_mm"])
+                else:
+                    directions[key] = [float(x) / length for x in v]
+        if oriented:
+            z = directions.get("axis", [0.0, 0.0, 1.0])
+            normal = directions.get("normal")
+            if normal is not None and ("axis" not in port or "axis" in directions):
+                if sum(a * b for a, b in zip(z, normal)) < 1.0 - 1e-8:
+                    _err(errors, "bad_port_frame", base + ".normal",
+                         "an oriented port's normal must point along its axis (frame Z)",
+                         "Use the same direction for axis and normal; facing belongs in attach.")
+            x_key = "x_axis" if "x_axis" in port else "tangent"
+            x = directions.get(x_key)
+            if x is not None and ("axis" not in port or "axis" in directions):
+                dot = sum(a * b for a, b in zip(x, z))
+                projected = [a - dot * b for a, b in zip(x, z)]
+                length = math.hypot(*projected)
+                if length <= 1e-8:
+                    _err(errors, "bad_port_frame", base + "." + x_key,
+                         "%s is parallel or too close to the frame Z axis" % x_key,
+                         "Give a transverse X direction; it is projected perpendicular to axis.")
+                elif not ("x_axis" in port and "tangent" in port):
+                    port["x_axis"] = [v / length for v in projected]
+                    port.pop("tangent", None)
+        if "radius_mm" in port and (not _is_finite_num(port["radius_mm"])
                                     or float(port["radius_mm"]) < 0):
             _err(errors, "bad_port", base + ".radius_mm",
-                 "radius_mm must be a number >= 0", "Use e.g. 5.0.")
+                 "radius_mm must be a finite number >= 0", "Use e.g. 5.0.")
         out.append(port)
     return out
 
@@ -986,7 +1048,8 @@ def _validate_part_source(part: dict, base: str, errors: list[dict]) -> None:
         sub = {"kind": "graph", "features": copy.deepcopy(graph.get("features")),
                "units": graph.get("units", "mm"),
                "segments": graph.get("segments", 64),
-               "output": graph.get("output")}
+               "output": graph.get("output"),
+               "params": part.get("params", graph.get("params", {}))}
         before = len(errors)
         _validate_graph(sub, errors)
         for err in errors[before:]:
@@ -997,7 +1060,10 @@ def _validate_part_source(part: dict, base: str, errors: list[dict]) -> None:
             "units": sub.get("units"),
             "segments": sub.get("segments"),
             "output": sub.get("output"),
+            "params": sub.get("params") or {},
         }
+        if "params" in part:
+            part["params"] = sub.get("params") or {}
     elif src == "spec":
         nested = part.get("spec")
         if not isinstance(nested, Mapping):
@@ -1019,6 +1085,95 @@ def _validate_part_source(part: dict, base: str, errors: list[dict]) -> None:
             _err(errors, "bad_model_id", base + ".model_id",
                  "model_id must be a non-empty string",
                  "Use a model_id built in this workspace.")
+
+
+_AUTO_PORT_NAMES = frozenset({"center", "axis_x", "axis_y", "axis_z"} | {
+    "face_%s%s" % (axis, sign) for axis in "xyz" for sign in "+-"
+})
+_ATTACH_KEYS = frozenset({"target", "target_port", "source_port", "gap_mm",
+                          "roll_deg", "facing"})
+
+
+def _validate_attachments(parts: list[dict], path: str,
+                          errors: list[dict]) -> list[str]:
+    """Validate the small placement contract and return a stable DAG order.
+
+    No geometry is built here: bbox port names are known independently of the
+    mesh, and declared ports override those names.  Direct assembly callers
+    use the same check before building any part.
+    """
+    by_id = {p["id"]: p for p in parts
+             if isinstance(p, Mapping) and isinstance(p.get("id"), str)}
+    deps = {pid: [] for pid in by_id}
+    port_names = {}
+    for pid, part in by_id.items():
+        raw_ports = part.get("ports")
+        raw_ports = raw_ports if isinstance(raw_ports, (list, tuple)) else []
+        port_names[pid] = _AUTO_PORT_NAMES | {
+            p.get("name") for p in raw_ports
+            if isinstance(p, Mapping) and isinstance(p.get("name"), str)
+        }
+    for i, part in enumerate(parts):
+        if not isinstance(part, Mapping) or part.get("attach") is None:
+            continue
+        base = "%s[%d].attach" % (path, i)
+        attach = part["attach"]
+        if not isinstance(attach, Mapping):
+            _err(errors, "bad_attach", base, "attach must be an object",
+                 "Use {target, target_port, source_port, gap_mm, roll_deg, facing}.")
+            continue
+        if part.get("transform") is not None:
+            _err(errors, "bad_attach", base,
+                 "attach and transform cannot both place one part",
+                 "Choose attach, or bake the placement into transform.")
+        for key in attach:
+            if key not in _ATTACH_KEYS:
+                _err(errors, "bad_attach", base + "." + str(key),
+                     "unknown attach field %r" % key,
+                     "Allowed fields: %s." % ", ".join(sorted(_ATTACH_KEYS)))
+        target = attach.get("target")
+        if not isinstance(target, str) or target not in by_id:
+            _err(errors, "unknown_part", base + ".target",
+                 "attach references unknown target part %r" % target,
+                 "Known parts: %s." % ", ".join(sorted(by_id)))
+        elif isinstance(part.get("id"), str) and part["id"] in deps:
+            deps[part["id"]] = [target]
+        for key, pid in (("target_port", target), ("source_port", part.get("id"))):
+            name = attach.get(key)
+            if not isinstance(name, str) or not name:
+                _err(errors, "bad_port_ref", base + "." + key,
+                     "%s must explicitly name a port" % key,
+                     "Use a declared port or a bbox port such as face_z+.")
+            elif isinstance(pid, str) and pid in port_names and name not in port_names[pid]:
+                _err(errors, "unknown_port", base + "." + key,
+                     "part %r has no port %r" % (pid, name),
+                     "Available ports: %s." % ", ".join(sorted(port_names[pid])))
+        for key in ("gap_mm", "roll_deg"):
+            if key in attach and not _is_finite_num(attach[key]):
+                _err(errors, "bad_attach", base + "." + key,
+                     "%s must be a finite number" % key,
+                     "Use millimetres for gap_mm and degrees for roll_deg.")
+        if attach.get("facing", "opposite") not in ("same", "opposite"):
+            _err(errors, "bad_attach", base + ".facing",
+                 "facing must be 'same' or 'opposite'",
+                 "Use opposite for facing interfaces, same for aligned frame Z axes.")
+    cycle = _cycle_nodes(sorted(deps), deps)
+    if cycle:
+        _err(errors, "attach_cycle", path,
+             "attach reference graph has a cycle through: %s" % ", ".join(sorted(cycle)),
+             "Break the cycle; each attached part needs a path to a root placement.")
+    # Lexical tie-breaking means part-list reordering cannot change placement
+    # or the implicit solver anchor of an assembly using this new contract.
+    remaining = set(deps)
+    order = []
+    while remaining:
+        ready = sorted(pid for pid in remaining
+                       if all(ref not in remaining for ref in deps[pid]))
+        if not ready:
+            break
+        order.extend(ready)
+        remaining.difference_update(ready)
+    return order
 
 
 def _validate_assembly(model: dict, errors: list[dict]) -> None:
@@ -1071,6 +1226,7 @@ def _validate_assembly(model: dict, errors: list[dict]) -> None:
         part["ports"] = _validate_ports(part.get("ports"), base + ".ports", errors)
         norm_parts.append(part)
     model["parts"] = norm_parts
+    _validate_attachments(norm_parts, "$.model.parts", errors)
 
     mates = model.get("mates", [])
     if mates is None:
@@ -1437,21 +1593,25 @@ def _propose_assembly(s: dict, model: dict, ledger: list[dict],
     if not isinstance(parts, list):
         return
     any_auto_ports = False
+    has_attachments = any(isinstance(p, Mapping) and p.get("attach") is not None for p in parts)
+    attach_order = _validate_attachments(parts, "$.model.parts", []) if has_attachments else []
+    root_id = attach_order[0] if attach_order else None
     for i, part in enumerate(parts):
         if not isinstance(part, dict):
             continue
         base = "$.model.parts[%d]" % i
-        if part.get("transform") is None:
+        if part.get("transform") is None and part.get("attach") is None:
             part["transform"] = {"translate_mm": [0, 0, 0],
                                  "rotate_deg": [0, 0, 0]}
             _assume(ledger, base + ".transform",
                     {"translate_mm": [0, 0, 0], "rotate_deg": [0, 0, 0]}, "mm/deg",
                     "identity initial pose; mates may move a free part")
         if part.get("fixed") is None:
-            fixed = (i == 0)
+            fixed = (part.get("id") == root_id) if has_attachments else (i == 0)
             part["fixed"] = fixed
             _assume(ledger, base + ".fixed", fixed, "",
-                    "anchor the first part so the assembly has a world frame"
+                    ("anchor the stable attachment root so the assembly has a world frame"
+                     if has_attachments else "anchor the first part so the assembly has a world frame")
                     if fixed else "leave this part free for the mate solver")
         ports = part.get("ports")
         if not ports:
@@ -1596,8 +1756,17 @@ def compile_spec(spec: Any) -> dict:
     if model["kind"] == KIND_ASSEMBLY:
         compiled = dict(base)
         parts_out = []
-        for part in model.get("parts") or []:
+        for i, part in enumerate(model.get("parts") or []):
             row = copy.deepcopy(dict(part))
+            if part.get("spec") is not None:
+                nested = compile_spec(part["spec"])
+                if not nested["ok"]:
+                    errors.extend(_prefix_errors(
+                        nested["errors"], "$.model.parts[%d].spec" % i))
+                    continue
+                # Keep the normalized inline spec as the public part source;
+                # compilation checks its constraints without replacing it by
+                # a different contract or loading model_id-backed parts.
             if part.get("recipe"):
                 try:
                     recipe = _get_recipe(str(part["recipe"]))
@@ -1677,6 +1846,10 @@ def compile_spec(spec: Any) -> dict:
             "params_m": values,
         })
 
+    if errors:
+        # A part that failed to resolve was skipped above; returning it as a
+        # successful compile would silently drop geometry from the assembly.
+        return {"ok": False, "compiled": None, "errors": errors}
     try:
         compiled = _json_copy(compiled)
     except Exception as exc:  # noqa: BLE001 - non-JSON recipe values are a value
@@ -1793,14 +1966,26 @@ def schema() -> dict:
         "assembly_model": {
             "kind": "assembly",
             "parts": "non-empty array of {id, recipe|graph|spec|model_id, "
-                     "transform:{translate_mm,rotate_deg,matrix}, fixed, ports, "
+                     "transform:{translate_mm,rotate_deg,matrix}|attach, fixed, ports, "
                      "material, quality, preset, params}",
             "mates": "array of {id, type, a, b, port_a, port_b, offset_mm, "
                      "value_mm, angle_deg, align, weight, allow_interference}",
             "mate_types": list(MATE_TYPES),
             "ports": "declared ports override auto bbox ports: "
-                     "{name, origin_mm, axis, normal, radius_mm, kind}; "
+                     "{name, origin_mm, axis, normal, x_axis|tangent, radius_mm, kind}; "
+                     "axis is frame Z; explicit X is projected perpendicular to Z; "
+                     "normal-only oriented ports inherit normal as Z; otherwise "
+                     "normal and axis must agree; omitted X keeps legacy roll. "
                      "auto ports are center, axis_x/y/z, face_x-/x+/...",
+            "attach": "part field {target, target_port, source_port, gap_mm:0, "
+                      "roll_deg:0, facing:'opposite'|'same'}; port names required. "
+                      "Mutually exclusive with transform. Stable target DAG order; "
+                      "gap along target +Z; roll about target +Z after Rx(180) for "
+                      "opposite. Initialization only: add mates to constrain; "
+                      "collision/clearance/DOF remain separate checks.",
+            "attachments_receipt": "assembly.attachments contains order, items "
+                                   "with initial world frames/mm matrix and final "
+                                   "position/rotation diagnostics; never a clearance proof",
             "solver": "{max_nfev, tolerance_mm}; least-squares mate solve",
             "clearance": "{threshold_mm} for sampled clearance checks",
             "allow_interference": "array of {a,b} pairs allowed to overlap "

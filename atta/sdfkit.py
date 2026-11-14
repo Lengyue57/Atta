@@ -118,7 +118,7 @@ def round_union(a, b, k):
 
 def sphere(X, Y, Z, center=(0.0, 0.0, 0.0), radius=1.0):
     cx, cy, cz = center
-    return np.sqrt((X - cx) ** 2 + (Y - cy) ** 2 + (Z - cz) ** 2) - float(radius)
+    return np.hypot(np.hypot(X - cx, Y - cy), Z - cz) - float(radius)
 
 
 def box(X, Y, Z, size=(1.0, 1.0, 1.0), center=(0.0, 0.0, 0.0), round_r=0.0):
@@ -128,8 +128,8 @@ def box(X, Y, Z, size=(1.0, 1.0, 1.0), center=(0.0, 0.0, 0.0), round_r=0.0):
     qx = np.abs(X - cx) - hx + round_r
     qy = np.abs(Y - cy) - hy + round_r
     qz = np.abs(Z - cz) - hz + round_r
-    outside = np.sqrt(np.maximum(qx, 0.0) ** 2 + np.maximum(qy, 0.0) ** 2
-                      + np.maximum(qz, 0.0) ** 2)
+    outside = np.hypot(np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0)),
+                       np.maximum(qz, 0.0))
     inside = np.minimum(np.maximum(qx, np.maximum(qy, qz)), 0.0)
     return outside + inside - round_r
 
@@ -144,9 +144,9 @@ def cylinder(X, Y, Z, radius=1.0, height=1.0, center=(0.0, 0.0, 0.0),
         u, v, w = dx, dz, dy
     else:
         u, v, w = dx, dy, dz
-    radial = np.sqrt(u * u + v * v) - float(radius) + round_r
+    radial = np.hypot(u, v) - float(radius) + round_r
     axial = np.abs(w) - 0.5 * float(height) + round_r
-    outside = np.sqrt(np.maximum(radial, 0.0) ** 2 + np.maximum(axial, 0.0) ** 2)
+    outside = np.hypot(np.maximum(radial, 0.0), np.maximum(axial, 0.0))
     inside = np.minimum(np.maximum(radial, axial), 0.0)
     return outside + inside - round_r
 
@@ -168,13 +168,13 @@ def torus(X, Y, Z, major=1.0, minor=0.2, center=(0.0, 0.0, 0.0), axis="z"):
     cx, cy, cz = center
     dx, dy, dz = X - cx, Y - cy, Z - cz
     if axis == "z":
-        radial = np.sqrt(dx * dx + dy * dy)
-        return np.sqrt((radial - float(major)) ** 2 + dz * dz) - float(minor)
+        radial = np.hypot(dx, dy)
+        return np.hypot(radial - float(major), dz) - float(minor)
     if axis == "x":
-        radial = np.sqrt(dy * dy + dz * dz)
-        return np.sqrt((radial - float(major)) ** 2 + dx * dx) - float(minor)
-    radial = np.sqrt(dx * dx + dz * dz)
-    return np.sqrt((radial - float(major)) ** 2 + dy * dy) - float(minor)
+        radial = np.hypot(dy, dz)
+        return np.hypot(radial - float(major), dx) - float(minor)
+    radial = np.hypot(dx, dz)
+    return np.hypot(radial - float(major), dy) - float(minor)
 
 
 def capsule(X, Y, Z, a=(0.0, 0.0, -1.0), b=(0.0, 0.0, 1.0), radius=0.2):
@@ -549,14 +549,19 @@ def _noise_field(X, Y, Z, frequency=1.0, seed=0, octaves=1, kind="fbm"):
 
 # ---------------------------------------------------------------- grid
 
-def grid(lo, hi, spacing):
-    """Sample grid covering ``[lo, hi]`` plus a margin; returns X, Y, Z, org."""
+def grid(lo, hi, spacing, *, max_samples=2_500_000):
+    """Sample a padded grid after checking its size, without changing spacing."""
+    from .sdf import grid_shape
+    from .errors import AttaError
+
+    shape = grid_shape(lo, hi, spacing)
+    if math.prod(shape) > int(max_samples):
+        raise AttaError("sdf_too_dense", "grid exceeds %d samples" % max_samples,
+                        path="spacing", fix="increase spacing before sampling",
+                        details={"samples": math.prod(shape), "max_samples": int(max_samples)})
     lo = np.asarray(lo, dtype=np.float64)
-    hi = np.asarray(hi, dtype=np.float64)
-    margin = 2.5 * float(spacing)
-    org = lo - margin
-    shape = tuple(int(math.ceil((hi[i] - lo[i] + 2.0 * margin) / spacing)) + 1
-                  for i in range(3))
+    spacing = float(spacing)
+    org = lo - 2.5 * spacing
     axes = [org[i] + np.arange(shape[i]) * spacing for i in range(3)]
     X, Y, Z = np.meshgrid(*axes, indexing="ij")
     return X, Y, Z, org
@@ -568,7 +573,7 @@ def sample(fn, lo, hi, spacing):
     return fn(X, Y, Z), org, float(spacing)
 
 
-def extract(phi, org, spacing):
-    """Marching-tets isosurface of ``phi < 0``; returns a Mesh."""
-    from .families.lattice import marching_tets
-    return marching_tets(phi, org, spacing)
+def extract(phi, org, spacing, **budgets):
+    """Bounded marching-tets isosurface of ``phi < 0``; returns a Mesh."""
+    from .sdf import marching_tets
+    return marching_tets(phi, org, spacing, **budgets)

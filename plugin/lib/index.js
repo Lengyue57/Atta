@@ -8,9 +8,10 @@
 // attach preview PNGs, and surface a compact error envelope ({data, error})
 // instead of a stack trace.
 //
-// Tools (10, all `atta_*` so they can never collide with another plugin's
-// namespace — e.g. the `blender_*` tools of dsh-blender-plugin, which must be
-// installable in the same DSH profile):
+// Tools (12, all `atta_*` for geometry).  Camera, texture and look work lives
+// in the separate `basid` program, so this plugin only has one namespace and
+// cannot collide with another plugin's tools — e.g. the `blender_*` tools of
+// dsh-blender-plugin, which must be installable in the same DSH profile:
 //   atta_doctor    engine / Blender / catalog self-check
 //   atta_catalog   recipes, feature schema, constraints, workflow
 //   atta_spec      Spec v3 validate / propose / compile / schema
@@ -21,6 +22,8 @@
 //   atta_preview   judgement/presentation PNGs + facts + image analysis
 //   atta_deliver   verify gate, then GLB/OBJ/STL + manifest
 //   atta_run       one call, several steps
+//   atta_conjure   datum-free conjure: semantic label -> invented params
+//   atta_design    design-rule check (readability, proportion, printability)
 //
 // Units: public params/spec are mm; the Blender scene is metres.
 //
@@ -63,7 +66,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)) // .../plugin/lib
 const NL = String.fromCharCode(10)
-const VERSION = '1.2.0'
+const VERSION = '1.2.2-beta.3'
 const PLUGIN_NAME = '@atta/dsh-atta'
 const DIAGNOSTIC_TOOL = 'atta_plugin_status'
 
@@ -81,6 +84,8 @@ const TOOL_TIMEOUT_MS = {
   atta_preview: 3600000,
   atta_deliver: 600000,
   atta_run: 1800000,
+  atta_conjure: 600000,
+  atta_design: 300000,
 }
 const DIAGNOSTIC_TIMEOUT_MS = 10000
 
@@ -97,6 +102,8 @@ const CONCURRENT = {
   atta_preview: false,
   atta_deliver: false,
   atta_run: false,
+  atta_conjure: false,
+  atta_design: true,
 }
 
 const TOOL_NAMES = Object.keys(TOOL_TIMEOUT_MS)
@@ -968,6 +975,19 @@ function humanSummary(name, result, attached) {
         Array.isArray(data.parts) ? 'parts=' + String(data.parts.length) : '',
         'next: atta_describe -> atta_verify',
       ].filter(Boolean).join(NL)
+    case 'atta_conjure':
+      return [
+        'conjure ok' + (data.model_id ? '; model_id=' + String(data.model_id) : ''),
+        'next: atta_describe -> atta_verify',
+      ].filter(Boolean).join(NL)
+    case 'atta_design': {
+      const summary = isRecord(data.summary) ? data.summary : {}
+      const failed = Array.isArray(summary.failed_ids) ? summary.failed_ids : []
+      return 'design passed=' + String(summary.passed == null ? '?' : summary.passed) +
+        ' failed=' + String(summary.failed == null ? '?' : summary.failed) +
+        ' n/a=' + String(summary.not_applicable == null ? '?' : summary.not_applicable) +
+        (failed.length ? '; failed: ' + failed.join(',') : '')
+    }
     case 'atta_variant': {
       const candidates = data.candidates || data.variants || []
       return 'variant ok; candidates=' + (Array.isArray(candidates) ? String(candidates.length) : '?')
@@ -1154,18 +1174,57 @@ function toolSpecs() {
         stop_on_error: { type: 'boolean', default: true, description: 'stop on first error (default true)' },
       },
     },
+    {
+      name: 'atta_conjure',
+      description:
+        '[Atta v' + VERSION + '] Datum-free conjure: given a semantic label (Chinese or English, e.g. "rifle magazine", "a planet", "fantasy sword"), invent a plausible parameter set and build plan from an archetype table + proportion rules + seed, without researching real dimensions. Every value carries provenance: measured (you supplied) / archetype (prototype ratio) / invented (seeded). build=true models it immediately and returns model_id. Prefer this for fictional/fantasy subjects instead of searching for nonexistent specs.',
+      parameters: {
+        label: { type: 'string', description: 'semantic label, e.g. "a battered rifle magazine" or "一颗星球"' },
+        seed: { type: 'integer', default: 0, description: 'deterministic seed: same label+seed+style gives the same result; change it for a variant' },
+        style: { type: 'string', default: 'neutral', description: 'neutral/brutal/elegant/organic/industrial/scifi/fantasy/ancient' },
+        size_mm: { type: 'array', items: { type: 'number' }, description: 'explicit bounding box [x,y,z] mm (recorded as measured)' },
+        scale: { type: 'number', default: 1, description: 'overall scale factor' },
+        constraints: { ...JSON_OBJECT, description: '{"max_mm":[x,y,z]} or {"min_mm":[...]} clamps the invented bounding box' },
+        build: { type: 'boolean', default: false, description: 'true builds the invented plan immediately and returns model_id' },
+        quality: { type: 'string', enum: ['draft', 'review', 'deliver'], default: 'draft', description: 'resolution profile when build=true' },
+      },
+    },
+    {
+      name: 'atta_design',
+      description:
+        '[Atta v' + VERSION + '] Design-rule check: verify only judges whether the shape is a valid solid; design judges whether the form reads and can be made — silhouette readability at small scale, negative space, three-level form hierarchy, proportion, symmetry, printability (min wall/overhang), moldability (draft angle), machinability (inside corner radius). Each rule returns ok/value/advice; ok=null means not applicable. A model can pass verify and still fail here.',
+      parameters: {
+        model_id: { type: 'string', description: 'model id; current model when omitted' },
+        rules: { type: 'array', items: { type: 'string' }, description: 'readability/negative_space/form_hierarchy/proportion/symmetry/printability/moldability/machinability' },
+        target_size_mm: { type: 'array', items: { type: 'number' }, description: 'target bounding box [x,y,z] mm for the proportion check' },
+        min_wall_mm: { type: 'number', default: 0.8, description: 'minimum printable wall' },
+        max_overhang_deg: { type: 'number', default: 45, description: 'maximum unsupported overhang angle' },
+        min_draft_deg: { type: 'number', default: 1, description: 'minimum draft angle for mold release' },
+        tool_radius_mm: { type: 'number', default: 3, description: 'cutter radius for inside corners' },
+        readability_threshold: { type: 'number', default: 0.9, description: 'silhouette readability threshold' },
+      },
+    },
+
   ]
 }
 
-// ──────────────────────────────────────────────────────── bundled skill
+// ──────────────────────────────────────────────────────── bundled skills
 //
 // Optional capability: a missing or malformed SKILL.md must never affect the
-// tool surface, so every read is cached and returns null on failure.
+// tool surface, so every read is cached per directory and returns null on
+// failure.  One skill ships today: `atta` (geometry).
+// Discovery is directory-based over skills/, but the list is explicit because
+// the host takes ONE provider per skill and a single provider cannot describe
+// two unrelated manuals.
+//
+// No cordis.patch.yml entry is needed for either of them: the bundle patch only
+// names the plugin package, and `files` in package.json already ships skills/.
 
-const SKILL_DIR = path.resolve(HERE, '..', 'skills', 'atta')
+const SKILL_DIRS = ['atta'].map((name) => path.resolve(HERE, '..', 'skills', name))
+const SKILL_DIR = SKILL_DIRS[0]
 const SKILL_PROVIDER = 'atta'
 const SKILL_RANK = 600
-let skillCache
+const skillCache = new Map()
 
 export function parseFrontmatter(raw) {
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(String(raw || ''))
@@ -1190,23 +1249,23 @@ export function parseFrontmatter(raw) {
 }
 
 export function readSkill(options = {}) {
-  if (skillCache !== undefined) return skillCache
+  const dir = options.dir || SKILL_DIR
+  // Cache per directory: with two bundled skills a single slot would hand
+  if (skillCache.has(dir)) return skillCache.get(dir)
+  let skill = null
   try {
-    const dir = options.dir || SKILL_DIR
     const file = path.join(dir, 'SKILL.md')
     const { meta, body } = parseFrontmatter(readFileSync(file, 'utf8'))
     const name = String(meta.name || '').trim()
     const description = String(meta.description || '').trim()
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) || !description) {
-      skillCache = null
-      return null
+    if (/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) && description) {
+      skill = { name: name, description: description, content: body, file: file, dir: dir }
     }
-    skillCache = { name: name, description: description, content: body, file: file, dir: dir }
-    return skillCache
   } catch (_error) {
-    skillCache = null
-    return null
+    skill = null
   }
+  skillCache.set(dir, skill)
+  return skill
 }
 
 export function createSkillProvider(options = {}) {
@@ -1246,23 +1305,51 @@ function info(ctx, message) {
   } catch (_error) { /* ignore */ }
 }
 
-function registerSkill(ctx) {
-  let provider
-  try {
-    provider = createSkillProvider()
-  } catch (error) {
-    warn(ctx, 'bundled skill not registered: ' + errLine(error))
-    return
-  }
-  if (!provider) {
-    warn(ctx, 'bundled skill not registered: skills/atta/SKILL.md missing or invalid frontmatter (tools unaffected)')
-    return
-  }
-  const mount = (scope) => {
+/**
+ * One provider per bundled skill directory that parses.  Never throws: an
+ * unreadable skill is reported in `missing` and the rest still register.
+ * @returns {{providers: object[], missing: string[]}}
+ */
+export function createSkillProviders(options = {}) {
+  const dirs = Array.isArray(options.dirs) ? options.dirs : SKILL_DIRS
+  const providers = []
+  const missing = []
+  for (const dir of dirs) {
+    let provider = null
     try {
-      scope.skills.registerProvider(() => provider)
-    } catch (error) {
-      warn(ctx, 'skill registration failed: ' + errLine(error) + ' (tools unaffected)')
+      provider = createSkillProvider({ ...options, dir: dir })
+    } catch (_error) {
+      provider = null
+    }
+    if (provider) providers.push(provider)
+    else missing.push(dir)
+  }
+  return { providers: providers, missing: missing }
+}
+
+function registerSkill(ctx) {
+  let providers = []
+  let missing = []
+  try {
+    const built = createSkillProviders()
+    providers = built.providers
+    missing = built.missing
+  } catch (error) {
+    warn(ctx, 'bundled skills not registered: ' + errLine(error))
+    return
+  }
+  for (const dir of missing) {
+    warn(ctx, 'bundled skill not registered: ' + dir + '/SKILL.md missing or invalid frontmatter (tools unaffected)')
+  }
+  if (!providers.length) return
+  const mount = (scope) => {
+    for (const provider of providers) {
+      try {
+        scope.skills.registerProvider(() => provider)
+      } catch (error) {
+        warn(ctx, 'skill registration failed for ' + String(provider.name) + ': ' +
+          errLine(error) + ' (tools unaffected)')
+      }
     }
   }
   try {
@@ -1530,6 +1617,7 @@ export const __internals = {
   TOOL_TIMEOUT_MS: TOOL_TIMEOUT_MS,
   CONCURRENT: CONCURRENT,
   SKILL_DIR: SKILL_DIR,
+  SKILL_DIRS: SKILL_DIRS,
   losslessSanitize: losslessSanitize,
   sanitize: sanitize,
   resolveDefineTool: resolveDefineTool,
@@ -1554,10 +1642,11 @@ export const __internals = {
   buildDiagnostic: buildDiagnostic,
   readSkill: readSkill,
   createSkillProvider: createSkillProvider,
+  createSkillProviders: createSkillProviders,
   parseFrontmatter: parseFrontmatter,
   runtimeView: runtimeView,
   HOST_API: HOST_API,
   schemaResolve: { have: Boolean(schema), via: schemasteryResolve.via, tried: schemasteryResolve.tried },
-  resetSkillCache: () => { skillCache = undefined },
+  resetSkillCache: () => { skillCache.clear() },
   resetPythonCache: () => { pythonCache.key = null; pythonCache.result = null },
 }

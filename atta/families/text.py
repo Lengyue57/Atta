@@ -319,7 +319,6 @@ _F.register_op(TEXT_OP, {
     "optional": ("at", "angle_deg", "mode", "stroke_width", "align"),
     "arity": 0,
     "lengths": ("height", "depth", "stroke_width"),
-    "vectors": ("at",),
     "doc": "Single-stroke text as solid strokes (z=0 at the surface); mode="
            "engrave returns the cutter, mode=emboss the raised body.",
 }, text_engrave)

@@ -35,12 +35,21 @@ import numpy as np
 
 from .. import materials
 from ..mesh import Mesh, canonical_hash
+from . import textures as texturelib
 from .finish import normalize_finish
 
 __all__ = [
     "BlenderError", "BlenderRuntime", "available", "blender_version",
-    "find_blender", "runtime", "RENDER_VIEWS",
+    "find_blender", "runtime", "RENDER_VIEWS", "RENDER_ENGINES", "BAKE_TYPES",
+    "texturelib",
 ]
+
+#: Engines the worker accepts on a ``render``/``render_parts``/``shoot`` request.
+RENDER_ENGINES = ("auto", "cycles", "eevee", "workbench")
+
+#: Bake passes the worker implements.
+BAKE_TYPES = ("diffuse", "normal", "roughness", "metallic", "ao", "combined",
+              "emit", "all")
 
 WORKER = Path(__file__).resolve().with_name("worker.py")
 PROTOCOL_PREFIX = "ATTA_JSON:"
@@ -76,6 +85,25 @@ def _normalize_passes(raw):
             if item not in out:
                 out.append(item)
     return out or ["beauty"]
+
+#: Request keys that come straight from ``settings`` and mean the same thing to
+#: every render op.  Only keys the caller actually set are forwarded, so an old
+#: request keeps its exact byte payload.
+RENDER_SETTING_KEYS = ("lighting", "background", "ground", "lens_mm", "exposure",
+                       "look", "ortho", "distance_factor", "deviation_range_mm",
+                       "focus", "aspect", "focus_padding", "engine", "device",
+                       "samples", "denoise", "view_transform", "world_strength",
+                       "passes")
+
+
+def _render_passthrough(settings: dict | None) -> dict:
+    """Only the render-settings keys the caller set, for the worker payload."""
+    out = {}
+    for key in RENDER_SETTING_KEYS:
+        if isinstance(settings, dict) and key in settings:
+            out[key] = settings[key]
+    return out
+
 
 _WORKER_TIMEOUT = 120.0
 _JOB_TIMEOUT = 300.0
@@ -522,7 +550,8 @@ class BlenderRuntime:
         return path
 
     def _write_job(self, mesh: Mesh, finish: dict, workdir=None,
-                   reuse_mesh: bool = False) -> Path:
+                   reuse_mesh: bool = False,
+                   material: dict | str | None = None) -> Path:
         job = self._job_dir(workdir)
         mesh_path = job / "mesh.npz"
         if not (reuse_mesh and mesh_path.exists()):
@@ -532,9 +561,32 @@ class BlenderRuntime:
                 faces=np.ascontiguousarray(mesh.faces, dtype=np.int64))
         (job / "finish.json").write_text(
             json.dumps(finish, sort_keys=True), encoding="utf-8")
+        # ``material=None`` means "use the finish's own material", which keeps
+        # every pre-existing caller byte-identical.  An explicit spec (an
+        # inline dict naming a texture set, typically) wins.
+        spec, warnings = self._material_json(
+            job, material if material is not None else finish["material"])
         (job / "material.json").write_text(
-            json.dumps(materials.resolve(finish["material"])), encoding="utf-8")
+            json.dumps(spec, sort_keys=True), encoding="utf-8")
+        # Warnings travel with the job (not on the instance): the runtime is a
+        # long-lived singleton and per-call state on it would race.
+        try:
+            (job / "material_warnings.json").write_text(
+                json.dumps(warnings), encoding="utf-8")
+        except OSError:
+            pass
         return job
+
+    def _material_json(self, job: Path, material) -> tuple[dict, list]:
+        """Resolve a material spec and resolve any texture set it names.
+
+        The worker runs inside Blender and cannot import this package, so the
+        ``texture_set`` id is turned into absolute map paths **here** and the
+        warnings are returned for the caller to fold into ``degraded``.
+        """
+        spec = materials.resolve(material)
+        enriched, warnings = texturelib.enrich(spec)
+        return enriched, warnings
 
     def _cache_key(self, mesh: Mesh, finish: dict, res: int, samples: int) -> str:
         digest = hashlib.sha256()
@@ -544,11 +596,62 @@ class BlenderRuntime:
         digest.update(("%d:%d" % (int(res), int(samples))).encode("ascii"))
         return digest.hexdigest()
 
+    @staticmethod
+    def _job_parts_textures(job: Path | None) -> list:
+        """Texture facts for each part of a ``render_parts`` job."""
+        if job is None:
+            return []
+        try:
+            spec = json.loads((Path(job) / "parts.json").read_text(
+                encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        out = []
+        for row in spec.get("parts") or []:
+            facts = texturelib.texture_facts(row.get("material") or {})
+            if facts:
+                out.append({"part_id": row.get("id"), **facts})
+        return out
+
+    @staticmethod
+    def _job_texture_warnings(job: Path | None) -> list:
+        if job is None:
+            return []
+        try:
+            spec = json.loads((Path(job) / "parts.json").read_text(
+                encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        return [str(w) for w in (spec.get("texture_warnings") or [])]
+
+    @staticmethod
+    def _job_material_warnings(job: Path | None) -> list:
+        """Texture-resolution warnings recorded when the job was written."""
+        if job is None:
+            return []
+        try:
+            data = json.loads((Path(job) / "material_warnings.json").read_text(
+                encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        return [str(w) for w in (data or [])]
+
+    @staticmethod
+    def _job_material(job: Path | None) -> dict | None:
+        if job is None:
+            return None
+        try:
+            return json.loads((Path(job) / "material.json").read_text(
+                encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
     # --------------------------------------------------------------- verbs
 
     def render(self, mesh: Mesh, finish: dict | None = None,
                views=("iso",), res: int = 512, samples: int = 8,
                workdir=None, *, dedupe: bool = True,
+               settings: dict | None = None,
                timeout: float | None = None) -> dict:
         """Render judgement images; cache is per (mesh, finish, view, res, samples)."""
         norm = normalize_finish(finish)
@@ -592,9 +695,10 @@ class BlenderRuntime:
         rendered: dict[str, dict] = {}
         if missing:
             self._write_job(mesh, norm, workdir=job, reuse_mesh=True)
-            response = self.request({"op": "render", "dir": str(job),
-                                     "views": missing, "res": res,
-                                     "samples": samples}, timeout=timeout)
+            payload = {"op": "render", "dir": str(job),
+                       "views": missing, "res": res, "samples": samples}
+            payload.update(_render_passthrough(settings))
+            response = self.request(payload, timeout=timeout)
             for image in response.get("images", []):
                 view = str(image.get("view"))
                 record = dict(image, cached=False)
@@ -623,6 +727,14 @@ class BlenderRuntime:
         response["views"] = view_list
         response["cached_views"] = [v for v in view_list if v in cached]
         response["rendered_views"] = [v for v in view_list if v in rendered]
+        # Report the texture/UV layer this render actually used, so a caller can
+        # prove a set was applied instead of inferring it from the pixels.
+        applied = self._job_material(job)
+        if applied is not None:
+            response["material"] = applied
+            facts = texturelib.texture_facts(applied)
+            if facts:
+                response["texture"] = facts
         if ordered:
             response["engine"] = response.get("engine") or ordered[0].get("engine")
             response["blender"] = response.get("blender") or ordered[0].get("blender")
@@ -636,6 +748,7 @@ class BlenderRuntime:
         mesh_dir = job / "parts"
         mesh_dir.mkdir(parents=True, exist_ok=True)
         rows = []
+        texture_warnings: list[str] = []
         for i, part in enumerate(parts):
             mesh = part["mesh"]
             if not isinstance(mesh, Mesh):
@@ -652,6 +765,10 @@ class BlenderRuntime:
                 mat_spec = dict(material)
             else:
                 mat_spec = materials.resolve(str(material or finish["material"]))
+            mat_spec, mat_warnings = texturelib.enrich(mat_spec)
+            for warning in mat_warnings:
+                texture_warnings.append("%s: %s"
+                                        % (part.get("id") or i, warning))
             rows.append({
                 "id": str(part.get("id") or "part_%d" % i),
                 "mesh": str(path.relative_to(job)),
@@ -669,7 +786,9 @@ class BlenderRuntime:
             ref_name = str(ref_path.relative_to(job))
         (job / "parts.json").write_text(
             json.dumps({"parts": rows, "settings": settings or {},
-                        "reference": ref_name}, sort_keys=True),
+                        "reference": ref_name,
+                        "texture_warnings": texture_warnings},
+                       sort_keys=True),
             encoding="utf-8")
         return job
 
@@ -757,11 +876,7 @@ class BlenderRuntime:
             response = self.request(
                 {"op": "render_parts", "dir": str(job), "views": missing,
                  "res": res, "samples": samples, "passes": passes,
-                 **{k: settings[k] for k in (
-                     "lighting", "background", "ground", "lens_mm",
-                     "exposure", "look", "ortho", "distance_factor",
-                 "deviation_range_mm", "focus", "aspect", "focus_padding")
-                    if k in settings}},
+                 **_render_passthrough(settings)},
                 timeout=timeout)
             for image in response.get("images", []):
                 view = str(image.get("view"))
@@ -794,6 +909,15 @@ class BlenderRuntime:
         response["passes"] = passes
         response["cached_frames"] = [list(k) for k in cached]
         response["rendered_frames"] = [list(k) for k in rendered]
+        # Per-part texture/UV receipts, read back from the job the worker used.
+        applied = []
+        for record in self._job_parts_textures(job):
+            applied.append(record)
+        if applied:
+            response["texture_parts"] = applied
+        warnings = self._job_texture_warnings(job)
+        if warnings:
+            response["degraded"] = list(response.get("degraded") or []) + warnings
         if ordered:
             response["engine"] = response.get("engine") or ordered[0].get("engine")
             response["blender"] = response.get("blender") or ordered[0].get("blender")
@@ -829,15 +953,22 @@ class BlenderRuntime:
 
     def export(self, mesh: Mesh, finish: dict | None = None,
                formats=("glb", "obj"), stem: str = "model", workdir=None,
-               *, timeout: float | None = None) -> dict:
-        """Export GLB / OBJ / STL / BLEND; returns a per-file receipt."""
+               *, material: dict | str | None = None,
+               timeout: float | None = None) -> dict:
+        """Export GLB / OBJ / STL / BLEND; returns a per-file receipt.
+
+        ``material`` overrides the finish's material for this export only.  It
+        is what makes a *textured* GLB possible: the finish's ``material`` is a
+        validated preset name, so the texture spec has to travel separately.
+        ``material=None`` writes the job exactly as before.
+        """
         norm = normalize_finish(finish)
         wanted = [str(f).lower() for f in formats]
         unknown = [f for f in wanted if f not in EXPORT_FORMATS]
         if unknown:
             raise ValueError("unsupported format(s) %s; use %s"
                              % (", ".join(unknown), ", ".join(EXPORT_FORMATS)))
-        job = self._write_job(mesh, norm, workdir)
+        job = self._write_job(mesh, norm, workdir, material=material)
         response = self.request({"op": "export", "dir": str(job),
                                  "formats": wanted, "stem": str(stem)},
                                 timeout=max(float(timeout or self.timeout),
@@ -845,6 +976,74 @@ class BlenderRuntime:
         response = dict(response)
         response["job"] = str(job)
         response["dir"] = response.get("dir") or str(job / "export")
+        # A texture set that could not be resolved must surface as degraded,
+        # never as a silently untextured deliverable.
+        warnings = self._job_material_warnings(job)
+        warnings.extend(str(w) for w in (response.get("degraded") or []))
+        response["degraded"] = warnings
+        applied = self._job_material(job)
+        if applied is not None:
+            response["material"] = applied
+            facts = texturelib.texture_facts(applied)
+            if facts:
+                response["texture"] = facts
+        return response
+
+    # ------------------------------------------------------------------ bake
+
+    def bake(self, mesh: Mesh, finish: dict | None = None, *,
+             types=("diffuse", "normal", "roughness", "ao"),
+             size_px: int = 1024, margin: int = 16, samples: int = 8,
+             engine: str = "cycles", device: str = "auto",
+             denoise: bool | None = None, workdir=None, stem: str = "baked",
+             write_set: bool = False, set_label: str | None = None,
+             settings: dict | None = None,
+             timeout: float | None = None) -> dict:
+        """Bake the finished, textured object to PNG maps (Cycles).
+
+        ``types`` is a list of ``diffuse`` (albedo, lighting-free), ``normal``
+        (tangent space, OpenGL), ``roughness``, ``metallic`` (baked through an
+        Emission shader, because Cycles has no metallic pass), ``ao``,
+        ``combined``, ``emit`` or ``all``.  With ``write_set`` the PNGs are also assembled into an
+        ``atta.texture/v1`` directory under ``<job>/bake/set_<stem>/``.
+
+        Returns the per-map receipt (path, sha256, timing, channel statistics)
+        — the statistics are what proves a bake wrote something other than
+        black, which is the failure mode that matters.
+        """
+        norm = normalize_finish(finish)
+        wanted = [str(t).strip().lower() for t in (types or [])]
+        if not wanted:
+            raise ValueError("bake needs at least one type")
+        unknown = [t for t in wanted if t not in BAKE_TYPES]
+        if unknown:
+            raise ValueError("unknown bake type(s) %s (use %s)"
+                             % (", ".join(unknown), ", ".join(BAKE_TYPES)))
+        if size_px < 16:
+            raise ValueError("size_px must be >= 16")
+        eng = str(engine or "cycles").strip().lower()
+        if eng not in ("cycles", "auto"):
+            # Baking is a Cycles feature; EEVEE cannot bake and saying so here
+            # beats a confusing worker-side error.
+            raise ValueError("bake requires engine=cycles (got %r)" % (engine,))
+        job = self._write_job(mesh, norm, workdir)
+        payload = {"op": "bake", "dir": str(job), "bake": wanted,
+                   "size_px": int(size_px), "margin": int(margin),
+                   "samples": int(samples), "device": str(device),
+                   "engine": "cycles", "stem": str(stem),
+                   "write_set": bool(write_set)}
+        if denoise is not None:
+            payload["denoise"] = bool(denoise)
+        if set_label:
+            payload["set_label"] = str(set_label)
+        payload.update(_render_passthrough(settings))
+        response = self.request(
+            payload, timeout=max(float(timeout or self.timeout), _JOB_TIMEOUT))
+        response = dict(response)
+        response["job"] = str(job)
+        response["dir"] = str(Path(str(job)) / "bake")
+        response["texture"] = texturelib.texture_facts(
+            self._job_material(job) or {})
         return response
 
     # -------------------------------------------------------------- context

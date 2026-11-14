@@ -1,7 +1,8 @@
 # @atta/dsh-atta
 
-Atta v1.2 的 DSH 无头建模插件。它不复制几何内核，只把 Atta 的十个动词包成
-DSH 工具（`atta_*`）。几何真值全部来自 Atta 引擎：
+Atta 1.2.2beta 的 DSH 无头建模插件。它不复制几何内核，只把 Atta 的十二个几何动词包成
+DSH 工具（十二个 `atta_*`）。几何真值全部来自
+Atta 引擎：
 
 - recipe / Spec v3 / feature graph -> numpy geometry -> Blender finish
 - 结构事实：bbox、体积、质心、拓扑、壁厚、曲率、ray/silhouette/section/clearance 探针
@@ -9,6 +10,7 @@ DSH 工具（`atta_*`）。几何真值全部来自 Atta 引擎：
 - 参数采样 / targets 约束求解 / Pareto / fit（`atta_variant`）
 - 交付 gate：verify 通过后导出 GLB/OBJ/STL/BLEND（图形子集另有 STEP）+ manifest
 - 视觉：按零件材质、摄影棚灯光、微距 focus、normal/depth/id/curvature/deviation 通道
+- 外观（贴图/相机）由独立的 basid 程序负责；Atta 只导出几何 GLB
 
 ## 设计上的三条硬规则（为什么代码长这样）
 
@@ -78,7 +80,10 @@ python3 -m atta.agent.install dsh --create   # 写 profile 的 dependency + bund
 | `atta_preview` | studio/catalog/dark/clay/diagnostic 图 + facts + 视觉统计（图片回传） |
 | `atta_deliver` | 非 pass 不写文件；GLB/OBJ/STL/BLEND（图形子集 +STEP）+ manifest |
 | `atta_run` | 一次调用跑多步 |
+| `atta_conjure` | 无数据虚构建模：语义标签 + 原型比例 + 种子 → 可信参数/构建方案；`build=true` 直接建模 |
+| `atta_design` | 设计法则检查：轮廓可读性、负空间、形体层次、比例、对称、可打印/脱模/可加工 |
 | `atta_plugin_status` | **仅降级时出现**：诊断占位工具 |
+
 
 ## 配置
 
@@ -121,6 +126,8 @@ traceback 永远不会出现在工具输出里。
 | `atta_preview` | 3600 s |
 | `atta_deliver` | 600 s |
 | `atta_run` | 1800 s |
+| `atta_conjure` | 600 s |
+| `atta_design` | 300 s |
 | 其余 | 120–600 s |
 
 超时是常量（`defineTool` 只收常量），每个都取引擎自身预算 + 余量，所以先触发的是

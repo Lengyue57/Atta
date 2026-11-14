@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""The ten agent-facing tools — the single source of truth for every host.
+"""The twelve agent-facing geometry tools — the single source of truth for every host.
+
+Camera, texture and look authoring live in the separate ``basid`` program,
+which cooperates through mesh files and its own MCP tool.
 
 MCP, HTTP, the DSH plugin and the OpenAI/Anthropic manifests all describe the
 same surface declared here.  Geometry work is delegated to ``atta.engine``,
@@ -25,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from atta.errors import AttaError
+from atta.version import VERSION
 
 # Modeling is stateful: model -> verify -> preview must observe the same
 # workspace.  Serialize calls inside one host process; the MCP server also
@@ -70,7 +74,7 @@ _SPEC = {
 
 
 # --------------------------------------------------------------------------- #
-# The ten tools
+# The twelve geometry tools
 # --------------------------------------------------------------------------- #
 
 TOOLS: list[dict] = [
@@ -284,6 +288,10 @@ TOOLS: list[dict] = [
             "allow_degraded": {**_BOOL,
                                "description": "true 才允许 degraded 交付；pass 不受影响"},
             "name": {**_STR, "description": "导出文件名 stem"},
+            "materials": {
+                "type": ["string", "object"], "additionalProperties": True,
+                "description": "导出用材质（与 atta_preview 同形）。带 texture_set 时 "
+                               "GLB 内嵌贴图、OBJ 旁写 .mtl+PNG；省略 = 用模型自身的预设名"},
         }),
     },
     {
@@ -357,6 +365,10 @@ TOOLS: list[dict] = [
         }),
     },
 ]
+
+for _tool in TOOLS:
+    _tag = "[Atta v%s]" % VERSION
+    _tool["description"] = _tag + _tool["description"].partition("]")[2]
 
 TOOL_NAMES: tuple[str, ...] = tuple(t["name"] for t in TOOLS)
 TOOL_BY_NAME: dict[str, dict] = {t["name"]: t for t in TOOLS}
@@ -849,6 +861,7 @@ def _deliver(engine, args: dict) -> Any:
         outdir=args.get("outdir"),
         allow_degraded=bool(args.get("allow_degraded", False)),
         name=args.get("name"),
+        materials=args.get("materials"),
     )
 
 
@@ -965,11 +978,28 @@ def _truncate_array(values: list) -> Any:
 
 
 def _compact(value: Any, depth: int = 0, key: str | None = None) -> Any:
-    """Recursively bound array/string size without renaming any field."""
+    """Recursively bound array/string size without renaming any field.
+
+    Also the last line of defence for JSON serialisability: the kernel may hand
+    back private helpers (``subject._points`` is an ndarray) or bare numpy
+    scalars.  A payload that json.dumps cannot encode would kill the CLI/MCP
+    reply *after* the work was done, so private keys are dropped and array-likes
+    are converted here rather than letting the protocol boundary raise.
+    """
     if depth > 12:
         return value
+    # numpy arrays/scalars: tolist() is the documented lossless projection.
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist) and not isinstance(value, (str, bytes, dict, list, tuple)):
+        try:
+            value = tolist()
+        except Exception:  # noqa: BLE001 - a value we cannot project is dropped
+            return None
     if isinstance(value, dict):
-        return {k: _compact(v, depth + 1, k) for k, v in value.items()}
+        # Underscore keys are private payload helpers (e.g. the subject point
+        # cloud the solver consumes), never part of the agent-facing contract.
+        return {k: _compact(v, depth + 1, k) for k, v in value.items()
+                if not (isinstance(k, str) and k.startswith("_"))}
     if isinstance(value, (list, tuple)):
         # ``images`` drives host attachment lookup (MCP content blocks, the DSH
         # plugin's collectImages); ``files`` is a tiny artifact list.  Both must

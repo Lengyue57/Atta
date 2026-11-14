@@ -3,8 +3,10 @@
 
 The kernel is deliberately mesh-native.  A part is any recipe/graph that
 produces a closed mesh; a *port* is a local frame (origin, axis, normal,
-radius) that a mate can reference.  Ports can be declared in the spec or
-derived from the part's bounding box (center, principal axes, faces).
+optional explicit x_axis, radius) that a mate can reference.  Ports can be
+declared in the spec or derived from the part's bounding box.  A part's attach
+initializes a deterministic frame-to-frame pose before mate solving; it is
+neither a mate nor a proof of clearance or manufacturability.
 
 Mates are residual equations in SE(3).  The solver is a damped non-linear
 least-squares (``scipy.optimize.least_squares``) over the free parts' six pose
@@ -34,6 +36,7 @@ from typing import Any, Iterable, Mapping
 import numpy as np
 
 from . import features, metrology, probe, recipes, state
+from . import verify as verifymod
 from .errors import AttaError
 from .mesh import Mesh, concat, transform
 
@@ -111,15 +114,23 @@ def matrix_rotvec(R) -> np.ndarray:
 
 def _unit(v, default=(0.0, 0.0, 1.0)) -> np.ndarray:
     v = np.asarray(v if v is not None else default, dtype=np.float64).reshape(3)
-    n = float(np.linalg.norm(v))
+    n = math.hypot(*v)
     if n < 1e-12:
         return np.asarray(default, dtype=np.float64)
     return v / n
 
 
-def _basis(axis) -> np.ndarray:
-    """Orthonormal columns x,y,z with z=axis."""
+def _basis(axis, x_axis=None) -> np.ndarray:
+    """Right-handed columns X,Y,Z.  The legacy fallback is unchanged."""
     z = _unit(axis)
+    if x_axis is not None:
+        x = np.asarray(x_axis, dtype=np.float64).reshape(3)
+        x = x - z * float(np.dot(x, z))
+        if not np.all(np.isfinite(x)) or float(np.linalg.norm(x)) <= 1e-8:
+            raise AttaError("bad_port_frame", "frame X must be transverse to frame Z",
+                            path="ports.x_axis", fix="use a finite transverse direction")
+        x = _unit(x)
+        return np.column_stack([x, np.cross(z, x), z])
     helper = np.array([1.0, 0.0, 0.0])
     if abs(float(np.dot(z, helper))) > 0.9:
         helper = np.array([0.0, 1.0, 0.0])
@@ -163,6 +174,7 @@ class Port:
     normal: np.ndarray                 # unit, part-local (plane mates)
     radius: float = 0.0
     kind: str = "axis"
+    x_axis: np.ndarray | None = None    # explicit local X; None keeps legacy roll
 
 
 @dataclass
@@ -185,9 +197,12 @@ class PortFrame:
     normal: np.ndarray
     radius: float = 0.0
     kind: str = "axis"
+    basis: np.ndarray | None = None
 
     @property
     def axes(self) -> np.ndarray:
+        if self.basis is not None:
+            return self.basis
         z = _unit(self.axis)
         helper = np.array([1.0, 0.0, 0.0])
         if abs(float(np.dot(z, helper))) > 0.9:
@@ -229,7 +244,7 @@ def _part_spec_doc(part: Mapping) -> dict:
             "units": graph.get("units") or "mm",
             "output": graph.get("output"),
             "segments": graph.get("segments"),
-            "params": dict(part.get("params") or graph.get("params") or {}),
+            "params": dict(part.get("params", graph.get("params")) or {}),
         }
     if source == "spec":
         spec = dict(part["spec"] or {})
@@ -291,7 +306,8 @@ def _build_part_mesh(part_spec: dict, *, quality: str,
             return _build_part_mesh({"kind": "graph",
                                      "features": model.get("features") or [],
                                      "units": model.get("units") or "mm",
-                                     "output": model.get("output")}, quality=quality,
+                                     "output": model.get("output"),
+                                     "params": model.get("params") or {}}, quality=quality,
                                     root=root)
         raise AttaError("assembly_model_kind",
                         "model %r is not a recipe or graph" % part_spec.get("id"),
@@ -328,31 +344,52 @@ def _auto_ports(mesh: Mesh) -> dict[str, Port]:
 
 
 def _declared_port(raw: Mapping) -> Port:
+    # The same boundary for direct build callers and validated Spec v3.
+    from .spec import _validate_ports
+    errors = []
+    validated = _validate_ports([raw], "ports", errors)
+    if errors:
+        err = errors[0]
+        raise AttaError(err["code"], err["message"], path=err["path"], fix=err["fix"])
+    raw = validated[0]
     origin = np.asarray(raw.get("origin_mm") or (0.0, 0.0, 0.0),
                         dtype=np.float64).reshape(3) / 1000.0
     axis = _unit(raw.get("axis") or (0.0, 0.0, 1.0))
     normal = _unit(raw.get("normal") or axis)
+    x_axis = np.asarray(raw["x_axis"], dtype=np.float64) if "x_axis" in raw else None
     return Port(str(raw.get("name") or "port"), origin, axis, normal,
                 radius=float(raw.get("radius_mm") or 0.0) / 1000.0,
-                kind=str(raw.get("kind") or "axis"))
+                kind=str(raw.get("kind") or "axis"), x_axis=x_axis)
 
 
 def _ports_for(part_spec: Mapping, mesh: Mesh) -> dict[str, Port]:
+    from .spec import _validate_ports
+    errors = []
+    declared = _validate_ports(part_spec.get("ports"), "ports", errors)
+    if errors:
+        err = errors[0]
+        raise AttaError(err["code"], err["message"], path=err["path"], fix=err["fix"])
     ports = _auto_ports(mesh)
-    for raw in part_spec.get("ports") or []:
-        if isinstance(raw, Mapping):
-            port = _declared_port(raw)
-            ports[port.name] = port
+    for raw in declared:
+        port = _declared_port(raw)
+        ports[port.name] = port
     return ports
 
 
 def _initial_pose(part_spec: Mapping) -> Pose:
     tr = part_spec.get("transform") or {}
-    if isinstance(tr, Mapping) and isinstance(tr.get("matrix"), (list, tuple)):
+    # Keep direct assembly.build callers on the same boundary as Spec v3.
+    from .spec import _validate_transform
+    errors = []
+    _validate_transform(tr, "transform", errors)
+    if errors:
+        err = errors[0]
+        raise AttaError("bad_transform", err["message"], path=err["path"],
+                        fix=err.get("fix"))
+    if isinstance(tr.get("matrix"), (list, tuple)):
         m = np.asarray(tr["matrix"], dtype=np.float64)
-        if m.shape == (4, 4):
-            # Spec matrices are in millimetres, like every other public length.
-            return Pose(t=m[:3, 3].copy() / 1000.0, R=m[:3, :3].copy())
+        # Spec matrices are in millimetres, like every other public length.
+        return Pose(t=m[:3, 3].copy() / 1000.0, R=m[:3, :3].copy())
     t = np.asarray(tr.get("translate_mm") or tr.get("translate") or (0, 0, 0),
                    dtype=np.float64).reshape(3) / 1000.0
     R = euler_xyz_matrix(tr.get("rotate_deg") or tr.get("rotate") or (0, 0, 0))
@@ -393,7 +430,56 @@ def _frame_for(part: Part, port_name: str) -> PortFrame:
         normal=_unit(pose.direction(port.normal)),
         radius=float(port.radius),
         kind=port.kind,
+        # Construct the frame in part coordinates, then rotate the whole
+        # basis.  Rebuilding it from the world axis loses roll about that axis
+        # and makes a lock mate leave an unintended rotational DOF.
+        basis=pose.R @ _basis(port.axis, port.x_axis),
     )
+
+
+def _attachment_pose(source: Part, target: Part, attach: Mapping) -> Pose:
+    """Place source local frame at target world frame with a proper rotation."""
+    source_port = source.ports[str(attach["source_port"])]
+    target_frame = _frame_for(target, str(attach["target_port"]))
+    turn = euler_xyz_matrix([0, 0, float(attach.get("roll_deg", 0.0))])
+    if attach.get("facing", "opposite") == "opposite":
+        # Rx(pi) keeps X, reverses Y/Z, and never introduces a reflection.
+        turn = turn @ np.diag([1.0, -1.0, -1.0])
+    R = target_frame.axes @ turn @ _basis(source_port.axis, source_port.x_axis).T
+    origin = target_frame.origin + target_frame.axis * float(attach.get("gap_mm", 0.0)) / 1000.0
+    return Pose(t=origin - R @ source_port.origin, R=R)
+
+
+def _frame_receipt(frame: PortFrame) -> dict:
+    return {"origin_mm": (frame.origin * 1000.0).tolist(),
+            "x_axis": frame.axes[:, 0].tolist(), "y_axis": frame.axes[:, 1].tolist(),
+            "axis": frame.axes[:, 2].tolist()}
+
+
+def _place_attachments(parts: list[Part], raw_parts: list[Mapping],
+                       order: list[str]) -> list[dict]:
+    by_id = {p.id: p for p in parts}
+    raw_by_id = {str(p["id"]): p for p in raw_parts}
+    report = []
+    for pid in order:
+        attach = raw_by_id[pid].get("attach")
+        if attach is None:
+            continue
+        source, target = by_id[pid], by_id[str(attach["target"])]
+        source.pose = _attachment_pose(source, target, attach)
+        matrix = source.pose.matrix()
+        matrix[:3, 3] *= 1000.0
+        report.append({
+            "source": pid, "target": target.id,
+            "source_port": str(attach["source_port"]), "target_port": str(attach["target_port"]),
+            "gap_mm": float(attach.get("gap_mm", 0.0)),
+            "roll_deg": float(attach.get("roll_deg", 0.0)),
+            "facing": str(attach.get("facing", "opposite")),
+            "initial_matrix": matrix.tolist(),
+            "initial_source_frame": _frame_receipt(_frame_for(source, str(attach["source_port"]))),
+            "initial_target_frame": _frame_receipt(_frame_for(target, str(attach["target_port"]))),
+        })
+    return report
 
 
 def _offset_m(mate: Mapping) -> float:
@@ -405,8 +491,8 @@ def _offset_m(mate: Mapping) -> float:
 
 
 def _mate_rows(mate: Mapping, fa: PortFrame, fb: PortFrame, L: float,
-               initial_rel: tuple[np.ndarray, np.ndarray] | None = None
-               ) -> list[float]:
+               initial_rel: tuple[np.ndarray, np.ndarray] | None = None,
+               *, weighted: bool = True) -> list[float]:
     """Residual rows in metres.  Rotational rows are scaled by ``L``."""
     typ = _mate_type(mate)
     za, zb = _unit(fa.axis), _unit(fb.axis)
@@ -415,6 +501,11 @@ def _mate_rows(mate: Mapping, fa: PortFrame, fb: PortFrame, L: float,
     d = ob - oa
     off = _offset_m(mate)
     weight = float(mate.get("weight", 1.0))
+    if not math.isfinite(weight) or weight <= 0.0:
+        raise AttaError("bad_mate_value", "mate weight must be finite and positive",
+                        path="mates.weight", fix="use weight > 0")
+    if not weighted:
+        weight = 1.0
     align = str(mate.get("align") or "auto").strip().lower()
     rows: list[float] = []
 
@@ -500,7 +591,8 @@ def _mate_rows(mate: Mapping, fa: PortFrame, fb: PortFrame, L: float,
 
 
 def mate_residuals(mates: Iterable[Mapping], parts: Mapping[str, Part],
-                   *, L: float | None = None) -> tuple[np.ndarray, list[dict]]:
+                   *, L: float | None = None,
+                   weighted: bool = True) -> tuple[np.ndarray, list[dict]]:
     """Evaluate every mate once; return rows and per-mate spans."""
     if L is None:
         L = _characteristic_length(parts)
@@ -522,7 +614,8 @@ def mate_residuals(mates: Iterable[Mapping], parts: Mapping[str, Part],
         if typ == "lock":
             rel_t, rel_R = mate.get("_initial_rel") or (None, None)
             initial_rel = (rel_t, rel_R) if rel_t is not None else None
-        block = _mate_rows(mate, fa, fb, L, initial_rel=initial_rel)
+        block = _mate_rows(mate, fa, fb, L, initial_rel=initial_rel,
+                           weighted=weighted)
         start = len(rows)
         rows.extend(block)
         report.append({
@@ -610,9 +703,9 @@ def solve_poses(parts_in: list[Part], mates: list[dict], *,
         lo[i * 6 + 3:i * 6 + 6] = -_ROT_LIMIT
         hi[i * 6 + 3:i * 6 + 6] = _ROT_LIMIT
 
-    def base_rows(x):
+    def base_rows(x, *, weighted=True):
         mapped = _apply_x(parts, free, x)
-        rows, spans = mate_residuals(mates, mapped, L=L)
+        rows, spans = mate_residuals(mates, mapped, L=L, weighted=weighted)
         return rows, spans, mapped
 
     def residuals(x):
@@ -649,7 +742,9 @@ def solve_poses(parts_in: list[Part], mates: list[dict], *,
     elif len(free):
         info = {"status": "unconstrained", "nfev": 0, "method": "initial"}
 
-    rows, spans, mapped = base_rows(solved_x)
+    # Weights steer the optimiser, but cannot shrink a physical mismatch
+    # below the tolerance in the acceptance receipt.
+    rows, spans, mapped = base_rows(solved_x, weighted=False)
     L_mm = L * 1000.0
     mate_report = []
     tol = max(1e-9, float(tol_mm) / 1000.0)
@@ -715,21 +810,24 @@ def _dof_report(parts: Mapping[str, Part], free: list[Part],
 
     def rows_at(x):
         mapped = _apply_x(list(parts.values()), free, x)
-        rows, _ = mate_residuals(mates, mapped, L=L)
+        rows, _ = mate_residuals(mates, mapped, L=L, weighted=False)
         return rows
 
     r0 = rows_at(x0)
     J = np.zeros((len(r0), n), dtype=np.float64)
     h = 1e-6
     for j in range(n):
-        xp = x0.copy()
+        xp, xm = x0.copy(), x0.copy()
         xp[j] += h
-        J[:, j] = (rows_at(xp) - r0) / h
+        xm[j] -= h
+        J[:, j] = (rows_at(xp) - rows_at(xm)) / (2.0 * h)
     if len(r0) == 0:
-        rank, s, Vh = 0, np.zeros(0), np.zeros((0, n))
+        rank, s, Vh = 0, np.zeros(0), np.eye(n)
     else:
         try:
-            _, s, Vh = np.linalg.svd(J, full_matrices=False)
+            # Reduced SVD omits null-space rows when equations < variables,
+            # producing per_part=0 for an otherwise five-DOF planar mate.
+            _, s, Vh = np.linalg.svd(J, full_matrices=len(r0) < n)
             threshold = max(1e-9, 1e-7 * float(s[0]) if len(s) else 1e-9)
             rank = int(np.sum(s > threshold))
         except np.linalg.LinAlgError:
@@ -814,22 +912,32 @@ def collision_report(meshes: Mapping[str, Mesh], *,
     bboxes = {name: _bbox_of(mesh) for name, mesh in meshes.items()}
     pairs = broadphase(bboxes, margin_mm=0.0)
     collisions = []
+    unresolved = []
+    methods = set()
     for a, b in pairs:
         key = tuple(sorted((a, b)))
         if key in allow:
             continue
         info = probe.interference(meshes[a], meshes[b])
+        methods.add(str(info.get("method")))
+        row = {"a": a, "b": b, "volume_mm3": info.get("volume_mm3"),
+               "overlap_bbox_mm": info.get("overlap_bbox_mm"),
+               "method": info.get("method"), "status": info.get("status"),
+               "reliable": info.get("reliable", False)}
+        if not row["reliable"]:
+            unresolved.append(dict(row, error=info.get("error")))
         if info.get("intersects"):
-            collisions.append({"a": a, "b": b,
-                               "volume_mm3": info.get("volume_mm3"),
-                               "overlap_bbox_mm": info.get("overlap_bbox_mm"),
-                               "method": info.get("method")})
+            collisions.append(row)
     return {
         "pairs": len(pairs),
         "candidates": [list(p) for p in pairs],
         "collisions": collisions,
+        "unresolved": unresolved,
         "has_collision": bool(collisions),
-        "method": "sweep_and_prune+aabb+manifold_boolean",
+        "complete": not unresolved,
+        "methods": sorted(methods),
+        "method": ("sweep_and_prune+aabb+manifold_boolean" if not unresolved
+                   else "sweep_and_prune+aabb+unresolved"),
     }
 
 
@@ -846,6 +954,13 @@ def clearance_report(meshes: Mapping[str, Mesh], *, threshold_mm: float = 5.0,
         info = probe.clearance(meshes[a], meshes[b], max_samples=max_samples)
         rows.append({"a": a, "b": b, "min_mm": info.get("min_mm"),
                      "bbox_gap_mm": round(gap, 4),
+                     "lower_bound_mm": info.get("lower_bound_mm"),
+                     "upper_bound_mm": info.get("upper_bound_mm"),
+                     "uncertainty_mm": info.get("uncertainty_mm"),
+                     "method": info.get("method"),
+                     "status": info.get("status"),
+                     "reliable": info.get("reliable", False),
+                     "exact": False,
                      "point_a_mm": info.get("point_a_mm"),
                      "point_b_mm": info.get("point_b_mm")})
     return {
@@ -888,7 +1003,28 @@ def build(spec: Mapping, *, quality: str = "draft", root=None,
     solver_opts = dict(model.get("solver") or {})
     max_nfev = int(solver_opts.get("max_nfev", max_nfev))
     tol_mm = float(solver_opts.get("tolerance_mm", tol_mm))
+    if not math.isfinite(tol_mm) or tol_mm <= 0.0:
+        raise AttaError("bad_solver", "tolerance_mm must be finite and positive",
+                        path="model.solver.tolerance_mm", fix="use tolerance_mm > 0")
 
+    from .spec import _validate_attachments
+    errors = []
+    ids = [raw.get("id") for raw in raw_parts if isinstance(raw, Mapping)]
+    if len(ids) != len(raw_parts) or any(not isinstance(pid, str) or not pid for pid in ids):
+        raise AttaError("assembly_part_id", "each part needs a non-empty id", path="parts",
+                        fix="give each part a unique string id")
+    if len(set(ids)) != len(ids):
+        raise AttaError("duplicate_part_id", "part ids must be unique", path="parts",
+                        fix="give each part a unique id")
+    order = _validate_attachments(raw_parts, "parts", errors)
+    if errors:
+        err = errors[0]
+        raise AttaError(err["code"], err["message"], path=err["path"], fix=err["fix"])
+    has_attachments = any(raw.get("attach") is not None for raw in raw_parts)
+    # Legacy assemblies keep their original order/implicit anchor unchanged.
+    if has_attachments:
+        raw_by_id = {str(raw["id"]): raw for raw in raw_parts}
+        raw_parts = [raw_by_id[pid] for pid in order]
     parts: list[Part] = []
     part_reports: list[dict] = []
     for raw in raw_parts:
@@ -934,9 +1070,21 @@ def build(spec: Mapping, *, quality: str = "draft", root=None,
             "ports": sorted(ports),
         })
 
+    attachment_rows = _place_attachments(parts, raw_parts, order) if has_attachments else []
     solved = solve_poses(parts, mates, max_nfev=max_nfev, tol_mm=tol_mm) \
-        if solve else _no_solve(parts, mates)
+        if solve else _no_solve(parts, mates, tol_mm=tol_mm)
     placed = solved["parts"]
+    # Diagnostics after mate solving; this is deliberately not an extra gate.
+    for row in attachment_rows:
+        source, target = placed[row["source"]], placed[row["target"]]
+        expected = _attachment_pose(source, target, row)
+        frame = _frame_for(source, row["source_port"])
+        desired_origin = expected.point(source.ports[row["source_port"]].origin)
+        row["final_position_error_mm"] = float(np.linalg.norm(frame.origin - desired_origin) * 1000.0)
+        row["final_rotation_error_deg"] = float(np.linalg.norm(matrix_rotvec(source.pose.R @ expected.R.T)) * 180.0 / math.pi)
+    attachments = {"method": "frame_to_frame/v1", "initialization_only": True,
+                   "order": [r["source"] for r in attachment_rows], "items": attachment_rows,
+                   "note": "Initial placement only; mates may move parts. Collision, clearance and DOF are separate checks."}
 
     world_meshes: dict[str, Mesh] = {}
     placements: dict[str, dict] = {}
@@ -945,10 +1093,12 @@ def build(spec: Mapping, *, quality: str = "draft", root=None,
         wm = Mesh(part.mesh.verts @ pose.R.T + pose.t, part.mesh.faces.copy(),
                   dict(part.mesh.meta))
         world_meshes[part.id] = wm
+        public_matrix = pose.matrix()
+        public_matrix[:3, 3] *= 1000.0
         placements[part.id] = {
             "translate_mm": [round(float(x) * 1000.0, 6) for x in pose.t],
             "rotate_deg": _euler_deg(pose.R),
-            "matrix": [[round(float(v), 9) for v in row] for row in pose.matrix()],
+            "matrix": [[round(float(v), 9) for v in row] for row in public_matrix],
             "fixed": bool(part.fixed),
         }
 
@@ -981,6 +1131,7 @@ def build(spec: Mapping, *, quality: str = "draft", root=None,
         "collision": collision,
         "clearance": clearance,
         "placements": placements,
+        "attachments": attachments,
         "allow_interference": [list(p) for p in sorted(allow)],
         "units": "mm",
         "exact": False,
@@ -997,8 +1148,17 @@ def build(spec: Mapping, *, quality: str = "draft", root=None,
     }
 
 
-def _no_solve(parts: list[Part], mates: list[dict]) -> dict:
-    rows, spans = mate_residuals(mates, {p.id: p for p in parts})
+def _no_solve(parts: list[Part], mates: list[dict], *, tol_mm: float = 0.01) -> dict:
+    part_map = {p.id: p for p in parts}
+    for mate in mates:
+        if str(mate.get("type") or "").lower() == "lock":
+            a, b = str(mate.get("a")), str(mate.get("b"))
+            dpa, dpb = _default_ports(mate, "lock")
+            fa = _frame_for(part_map[a], str(mate.get("port_a") or dpa))
+            fb = _frame_for(part_map[b], str(mate.get("port_b") or dpb))
+            mate["_initial_rel"] = (fa.axes.T @ (fb.origin - fa.origin),
+                                    fa.axes.T @ fb.axes)
+    rows, spans = mate_residuals(mates, part_map, weighted=False)
     report = []
     for entry in spans:
         lo, hi = entry["span"]
@@ -1007,7 +1167,7 @@ def _no_solve(parts: list[Part], mates: list[dict]) -> dict:
         report.append(dict(entry, residual_mm=round(norm * 1000.0, 6),
                            max_mm=round(float(np.max(np.abs(block)) if len(block)
                                               else 0.0) * 1000.0, 6),
-                           ok=bool(norm <= 0.01 / 1000.0),
+                           ok=bool(norm <= float(tol_mm) / 1000.0),
                            rows_values=[round(float(v), 9) for v in block]))
     return {
         "status": "not_solved",
@@ -1019,7 +1179,7 @@ def _no_solve(parts: list[Part], mates: list[dict]) -> dict:
         "dof": {"dof": None, "note": "solve disabled"},
         "solver": {"status": "skipped", "nfev": 0},
         "scale_mm": 0.0,
-        "tolerance_mm": 0.01,
+        "tolerance_mm": float(tol_mm),
     }
 
 
@@ -1105,6 +1265,20 @@ def verify(build_result: Mapping, *,
                else "part %s has zero volume" % pid,
                "rebuild the part or check its boolean inputs")
 
+    # Reuse the mesh verifier for declared approximation failures, without
+    # remeasuring every ordinary part or applying whole-assembly dimensions
+    # to a local part. Only retain failures; disconnected part geometry is
+    # legitimate unless a component-count constraint says otherwise.
+    for pid, mesh in (build_result.get("part_meshes") or {}).items():
+        if not (mesh.meta.get("issues") or mesh.meta.get("geometry_provenance")
+                or mesh.meta.get("parts")
+                or (mesh.meta.get("nurbs") or {}).get("target_met") is False):
+            continue
+        quality = verifymod.verify(mesh, level=level)
+        checks.extend(dict(c, id="part.%s.%s" % (pid, c["id"]))
+                      for c in quality["checks"]
+                      if not c["ok"] and c["id"] != "components")
+
     for mate in asm.get("mates") or []:
         mid = mate.get("id")
         _check(checks, "mate.%s" % mid, bool(mate.get("ok")),
@@ -1115,6 +1289,10 @@ def verify(build_result: Mapping, *,
 
     dof = asm.get("dof") or {}
     require = bool(cons.get("fully_constrained", False))
+    if require and dof.get("dof") is None:
+        _check(checks, "dof", False, "error", None, "0",
+               "remaining DOF was not measured",
+               "enable the pose solver and use a smaller verified assembly")
     if dof.get("dof") is not None:
         _check(checks, "dof", (not require) or int(dof.get("dof") or 0) == 0,
                "warn" if not require else "error",
@@ -1123,13 +1301,22 @@ def verify(build_result: Mapping, *,
                if dof.get("dof") else "assembly is fully constrained",
                "add mates to remove the remaining degrees of freedom")
 
-    collisions = (asm.get("collision") or {}).get("collisions") or []
-    _check(checks, "collision", not collisions, "error",
+    collision = asm.get("collision") or {}
+    unresolved = collision.get("unresolved") or []
+    if unresolved:
+        _check(checks, "collision.measurement", False, "error", unresolved,
+               "all candidate pairs measured reliably",
+               "interference could not be determined for %d pair(s)" % len(unresolved),
+               "restore the boolean backend and re-run verify; voxel estimates "
+               "cannot certify no interference")
+    collisions = collision.get("collisions") or []
+    _check(checks, "collision", not collisions and not unresolved, "error",
            [{"a": c.get("a"), "b": c.get("b"),
              "volume_mm3": c.get("volume_mm3")} for c in collisions],
            "no unintended interference",
-           "no unintended interference" if not collisions
-           else "%d part pair(s) interfere" % len(collisions),
+           "interference is unresolved" if unresolved else (
+               "no unintended interference" if not collisions
+               else "%d part pair(s) interfere" % len(collisions)),
            "move the parts apart, adjust mates, or declare allow_interference")
 
     envelope = cons.get("envelope")
@@ -1163,13 +1350,17 @@ def verify(build_result: Mapping, *,
                    "clearance references an unknown part",
                    "available parts: %s" % ", ".join(sorted(part_meshes)))
             continue
-        got = probe.clearance(part_meshes[a], part_meshes[b])["min_mm"]
-        ok = float(got) >= need
+        info = probe.clearance(part_meshes[a], part_meshes[b])
+        lower = info.get("lower_bound_mm")
+        ok = lower is not None and float(lower) + 1e-9 >= need
         _check(checks, "clearance.%d" % i, ok, "error",
-               {"a": a, "b": b, "min_mm": got}, ">=%s" % need,
-               "clearance %s/%s meets the limit" % (a, b) if ok
-               else "clearance %s/%s is too small" % (a, b),
-               "increase the gap between '%s' and '%s'" % (a, b))
+               {"a": a, "b": b, "min_mm": info["min_mm"],
+                "lower_bound_mm": lower, "upper_bound_mm": info.get("upper_bound_mm"),
+                "exact": False}, ">=%s" % need,
+               "clearance %s/%s is certified by its lower bound" % (a, b) if ok
+               else "clearance %s/%s is below the limit or not certified" % (a, b),
+               "increase the separation or obtain a tighter certified distance; "
+               "the sampled estimate alone cannot prove minimum clearance")
 
     for i, row in enumerate(_rows(cons.get("interference"))):
         a, b = row.get("a"), row.get("b")
@@ -1180,23 +1371,46 @@ def verify(build_result: Mapping, *,
                    "interference references an unknown part",
                    "available parts: %s" % ", ".join(sorted(part_meshes)))
             continue
-        got = float(probe.interference(part_meshes[a], part_meshes[b])
-                    .get("volume_mm3") or 0.0)
-        ok = got <= cap
+        info = probe.interference(part_meshes[a], part_meshes[b])
+        got = float(info.get("volume_mm3_unrounded", info.get("volume_mm3")) or 0.0)
+        ok = bool(info.get("reliable")) and got <= cap
         _check(checks, "interference.%d" % i, ok, "error",
-               {"a": a, "b": b, "volume_mm3": got}, "<=%s" % cap,
-               "interference %s/%s within allowance" % (a, b) if ok
-               else "interference %s/%s exceeds the allowance" % (a, b),
-               "adjust the mate offset or declare allow_interference")
+               {"a": a, "b": b, "volume_mm3": got,
+                "status": info.get("status"), "method": info.get("method"),
+                "error": info.get("error")}, "<=%s" % cap,
+               "interference %s/%s is unresolved" % (a, b) if not info.get("reliable")
+               else ("interference %s/%s within allowance" % (a, b) if ok
+                     else "interference %s/%s exceeds the allowance" % (a, b)),
+               "restore the boolean backend or adjust the mate offset; "
+               "declare allow_interference only for intentional overlap")
 
-    failed = [c for c in checks if not c["ok"]]
+    # Whole-assembly dimensions/topology use the same predicates as a single
+    # model. Keep the existing assembly-specific DOF, envelope and pair gates;
+    # an unconstrained assembly does not pay for another full mesh analysis.
+    general = {key: value for key, value in cons.items()
+               if key not in {"fully_constrained", "envelope", "clearance", "interference"}}
+    if general:
+        mesh = build_result.get("mesh")
+        if mesh is None:
+            _check(checks, "constraints.mesh", False, "error", None, "assembled mesh",
+                   "whole-assembly constraints require the final world mesh",
+                   "rebuild the assembly before verification")
+        else:
+            receipt = verifymod.verify(mesh, constraints=general, level=level,
+                                       parts=part_meshes)
+            # An assembly intentionally contains multiple connected components.
+            # Explicit n_components is a separate check and remains enforced.
+            checks.extend(c for c in receipt["checks"] if c["id"] != "components")
+
+    evaluated = [c for c in checks if not c.get("skipped")]
+    failed = [c for c in evaluated if not c["ok"]]
     errors = [c for c in failed if c["severity"] == "error"]
     warns = [c for c in failed if c["severity"] != "error"]
     verdict = "fail" if errors else ("degraded" if warns else "pass")
     issues = [{"check": c["id"], "severity": c["severity"],
                "value": c["value"], "expected": c["expected"],
                "message": c["message"], "fix": c["fix"]} for c in failed]
-    score = round((len(checks) - len(failed)) / max(1, len(checks)), 4)
+    score = round((len(evaluated) - len(failed)) / max(1, len(evaluated)), 4)
     return {
         "method": "atta.assembly.verify/v1",
         "verdict": verdict,
@@ -1204,6 +1418,7 @@ def verify(build_result: Mapping, *,
         "score": score,
         "checks": checks,
         "issues": issues,
+        "skipped": [c for c in checks if c.get("skipped")],
         "assembly": asm,
         "metrics": _plain(build_result.get("metrics") or {}),
         "ms": round((time.perf_counter() - t0) * 1000.0, 1),
@@ -1211,6 +1426,69 @@ def verify(build_result: Mapping, *,
 
 
 # -------------------------------------------------------------------- export
+
+def _export_assembly_step(build_result: Mapping, path) -> dict:
+    """Export the exact graph parts of an assembly as one placed STEP compound.
+
+    Mesh-only parts (NURBS, field trees, recipes) have no analytic B-rep and
+    are reported as omissions instead of being converted into a fake STEP.
+    """
+    from . import brep
+    try:
+        import build123d as b
+        from OCP.gp import gp_Trsf
+    except ImportError as exc:  # optional exact backend
+        raise AttaError("brep_unavailable",
+                        "STEP export requires build123d/OCCT: %s" % exc,
+                        path="formats.step",
+                        fix="install the optional CAD extra, or request GLB/OBJ/STL") from exc
+
+    parts = build_result.get("parts") or {}
+    shapes, exported, omitted = [], [], []
+    for pid, part in parts.items():
+        spec = part.spec or {}
+        if str(spec.get("kind") or "") != "graph":
+            omitted.append({"part": pid, "code": "brep_unsupported",
+                            "message": "part source is not supported by the assembly STEP exporter",
+                            "path": "parts.%s" % pid,
+                            "fix": "inline a supported graph, or request GLB/OBJ/STL"})
+            continue
+        try:
+            report = brep.build_graph(spec)
+        except AttaError as exc:
+            if exc.code != "brep_unsupported":
+                # An exact-backend failure is not evidence of mesh-only
+                # geometry. Abort this STEP and preserve the actionable error.
+                raise
+            omitted.append({"part": pid, **exc.to_dict()})
+            continue
+        R = np.asarray(part.pose.R, dtype=float)
+        t = np.asarray(part.pose.t, dtype=float) * 1000.0
+        trsf = gp_Trsf()
+        trsf.SetValues(
+            float(R[0, 0]), float(R[0, 1]), float(R[0, 2]), float(t[0]),
+            float(R[1, 0]), float(R[1, 1]), float(R[1, 2]), float(t[1]),
+            float(R[2, 0]), float(R[2, 1]), float(R[2, 2]), float(t[2]))
+        shapes.append(report["shape"].moved(b.Location(trsf)))
+        exported.append(pid)
+    if not shapes:
+        raise AttaError("brep_unsupported",
+                        "no assembly part has an exact STEP representation",
+                        path="formats.step",
+                        fix="request GLB/OBJ/STL, or rebuild parts as supported graphs",
+                        details={"omitted": omitted})
+    compound = b.Compound(shapes)
+    b.export_step(compound, str(path), unit=b.Unit.MM)
+    size = path.stat().st_size if path.exists() else 0
+    if size <= 0:
+        raise AttaError("brep_export", "STEP export produced no bytes",
+                        path="path", fix="check write permissions")
+    import hashlib
+    return {"path": str(path), "format": "step", "ok": True,
+            "backend": "brep", "bytes": int(size),
+            "parts": exported, "omitted": omitted,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
 
 def export_scene(build_result: Mapping, *, formats=("glb", "obj", "stl"),
                  outdir=None, stem: str = "assembly") -> dict:
@@ -1258,7 +1536,7 @@ def export_scene(build_result: Mapping, *, formats=("glb", "obj", "stl"),
                              faces=np.asarray(mesh.faces), process=False)
         safe = str(pid).replace("/", "_")
         for fmt in wanted:
-            if fmt in ("glb", "gltf"):
+            if fmt in ("glb", "gltf", "step"):
                 continue
             try:
                 path = out / ("%s_%s.%s" % (stem, safe, fmt))
@@ -1267,6 +1545,19 @@ def export_scene(build_result: Mapping, *, formats=("glb", "obj", "stl"),
             except Exception as exc:  # noqa: BLE001
                 errors.append({"format": fmt, "part": pid,
                                "error": "%s: %s" % (type(exc).__name__, exc)})
+
+    if "step" in wanted:
+        path = out / ("%s.step" % stem)
+        try:
+            row = _export_assembly_step(build_result, path)
+            files.append(row)
+            for omitted in row.get("omitted") or []:
+                errors.append({"format": "step", **omitted})
+        except AttaError as exc:
+            errors.append({"format": "step", "error": exc.to_dict()})
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"format": "step",
+                           "error": "%s: %s" % (type(exc).__name__, exc)})
     return {"files": files, "errors": errors, "outdir": str(out)}
 
 

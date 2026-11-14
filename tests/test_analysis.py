@@ -216,6 +216,56 @@ def test_clearance_interference_nearest_inside():
     assert probe.inside(m, (200.0, 0.0, 0.0)) is False
 
 
+def test_native_clearance_resolves_crossing_thin_rods(monkeypatch):
+    from atta.primitives import box
+    a = box([0.02, 0.0002, 0.001]).transform(rotate_deg=[0, 0, 45])
+    b = box([0.02, 0.0002, 0.001]).transform(
+        rotate_deg=[0, 0, -45], translate=[0, 0, 0.00105])
+    native = probe.clearance(a, b)
+    assert native["method"] == "manifold.min_gap"
+    assert native["min_mm"] == pytest.approx(0.05, abs=1e-4)
+    assert native["reliable"] is True
+    # Force only the optional native backend to fail.  The sampled upper
+    # bound is >3 mm even though the actual gap is 0.05 mm.
+    import manifold3d
+    monkeypatch.setattr(manifold3d, "Manifold", lambda *a, **kw: (_ for _ in ()).throw(
+        RuntimeError("controlled native distance failure")))
+    sampled = probe.clearance(a, b)
+    assert sampled["min_mm"] > 3
+    assert sampled["lower_bound_mm"] == pytest.approx(0.05)
+    assert sampled["reliable"] is False
+    receipt = verify.verify(a, constraints={"clearance": [
+        {"a": "a", "b": "b", "min_mm": 1}]}, parts={"a": a, "b": b})
+    assert any(c["id"] == "clearance.0" and not c["ok"] for c in receipt["checks"])
+
+
+@pytest.mark.parametrize("key", ["interference", "interfaces"])
+def test_pair_gate_rejects_unresolved_boolean(monkeypatch, key):
+    import trimesh
+    a = cube(10)
+    b = cube(10, (1, 0, 0))
+    monkeypatch.setattr(trimesh.boolean, "intersection", lambda *a, **kw: None)
+    info = probe.interference(a, b)
+    assert info["reliable"] is False
+    assert info["status"] == "unknown"
+    assert "no result" in info["error"]
+    receipt = verify.verify(a, constraints={key: [
+        {"a": "a", "b": "b", "max_mm3": 1e9}]}, parts={"a": a, "b": b})
+    cid = "interface.0" if key == "interfaces" else "interference.0"
+    assert any(c["id"] == cid and not c["ok"] for c in receipt["checks"])
+
+
+def test_interference_gate_compares_unrounded_volume():
+    from atta.primitives import box
+    a = box([2e-5, 2e-5, 2e-5])  # 0.000008 mm^3, rounded display is 0.
+    info = probe.interference(a, a)
+    assert info["volume_mm3"] == 0.0
+    assert info["volume_mm3_unrounded"] > 1e-6
+    receipt = verify.verify(a, constraints={"interference": [
+        {"a": "a", "b": "b", "max_mm3": 1e-6}]}, parts={"a": a, "b": a})
+    assert any(c["id"] == "interference.0" and not c["ok"] for c in receipt["checks"])
+
+
 # ---------------------------------------------------------------- facts
 
 def test_facts_card():

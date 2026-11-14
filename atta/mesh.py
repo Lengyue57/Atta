@@ -120,12 +120,16 @@ def _signed_volume_and_centroid(mesh: Mesh):
     f = mesh.faces
     if len(f) == 0:
         return 0.0, np.zeros(3)
-    a, b, c = v[f[:, 0]], v[f[:, 1]], v[f[:, 2]]
+    # Integrate near the object, not the world origin: translated small solids
+    # otherwise subtract huge tetrahedra and lose both volume and centroid.
+    origin = v[f[0, 0]]
+    a, b, c = v[f[:, 0]] - origin, v[f[:, 1]] - origin, v[f[:, 2]] - origin
     six = np.einsum("ij,ij->i", a, np.cross(b, c))
     total6 = float(six.sum())
-    # tetrahedron centroid = (a+b+c+0)/4, weighted by signed volume
+    if abs(total6) < 1e-300:
+        return total6 / 6.0, np.zeros(3)
     weighted = ((a + b + c) / 4.0) * six[:, None]
-    return total6 / 6.0, weighted.sum(axis=0) / max(abs(total6), 1e-300)
+    return total6 / 6.0, origin + weighted.sum(axis=0) / total6
 
 
 def volume(mesh: Mesh) -> float:
@@ -290,8 +294,16 @@ def topology(mesh: Mesh) -> dict:
             "degenerate_faces": 0, "empty": True,
         }
 
-    degenerate = int(((f[:, 0] == f[:, 1]) | (f[:, 1] == f[:, 2]) |
-                      (f[:, 2] == f[:, 0])).sum())
+    repeated = ((f[:, 0] == f[:, 1]) | (f[:, 1] == f[:, 2]) | (f[:, 2] == f[:, 0]))
+    # Distinct vertex IDs can still describe a collapsed triangle. Test area
+    # in per-triangle normalised coordinates, with no physical-scale epsilon.
+    ab, ac = v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]]
+    edge_scale = np.maximum(np.max(np.abs(ab), axis=1), np.max(np.abs(ac), axis=1))
+    safe = np.where(edge_scale > 0, edge_scale, 1.0)
+    with np.errstate(invalid="ignore", over="ignore"):
+        cross = np.cross(ab / safe[:, None], ac / safe[:, None])
+    collapsed = ~np.isfinite(cross).all(axis=1) | np.all(cross == 0, axis=1)
+    degenerate = int((repeated | collapsed).sum())
     e = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]], axis=0)
     reps, inv, counts, key = _unique_undirected(e, nv)
     ne = int(len(reps))
@@ -338,7 +350,19 @@ def canonical_hash(mesh: Mesh, q: float = 1e-9) -> str:
     """
     if len(mesh.verts) == 0:
         return hashlib.sha256(b"atta:empty").hexdigest()
-    vq = np.round(mesh.verts / max(float(q), 1e-15)).astype(np.int64)
+    quantum = max(float(q), 1e-15)
+    rounded = np.round(mesh.verts / quantum)
+    extent = float(np.max(np.ptp(mesh.verts, axis=0)))
+    # Keep legacy hashes at ordinary scales. For tiny shapes the old absolute
+    # quantisation erased dimensions; for huge coordinates it overflowed int64.
+    # Exact float payloads in an explicitly different domain avoid both aliases.
+    exact_payload = (extent < quantum * 1000 or not np.isfinite(rounded).all()
+                     or np.max(np.abs(rounded)) >= 2**63)
+    if exact_payload:
+        vq = mesh.verts.astype("<f8", copy=True)
+        vq[vq == 0] = 0.0  # canonicalise negative zero
+    else:
+        vq = rounded.astype(np.int64)
     order = np.lexsort((vq[:, 2], vq[:, 1], vq[:, 0]))
     vq = vq[order]
     remap = np.empty(len(order), dtype=np.int64)
@@ -351,7 +375,7 @@ def canonical_hash(mesh: Mesh, q: float = 1e-9) -> str:
         f = f[rows, cols]
         f = f[np.lexsort((f[:, 2], f[:, 1], f[:, 0]))]
     h = hashlib.sha256()
-    h.update(b"atta.mesh/v1\n")
+    h.update(b"atta.mesh/float64-v1\n" if exact_payload else b"atta.mesh/v1\n")
     h.update(str(vq.shape).encode("ascii"))
     h.update(vq.tobytes())
     h.update(str(f.shape).encode("ascii"))

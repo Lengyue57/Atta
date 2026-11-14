@@ -29,7 +29,11 @@ EXPECTED = [
 ]
 
 
-ENGINE_NAMES = [name[len("atta_"):] for name in EXPECTED]
+# Engine attribute names: strip the `atta_` prefix.
+ENGINE_NAMES = [
+    name[len("atta_"):] if name.startswith("atta_") else name
+    for name in EXPECTED
+]
 
 
 def _fake_engine(calls, *, error=None):
@@ -48,7 +52,7 @@ def _fake_engine(calls, *, error=None):
     })
 
 
-def test_exactly_twelve_tools_in_order():
+def test_every_tool_listed_exactly_once_in_order():
     assert [tool["name"] for tool in tools.TOOLS] == EXPECTED
     assert tuple(tools.TOOL_NAMES) == tuple(EXPECTED)
     assert list(tools.TOOL_BY_NAME) == EXPECTED
@@ -136,7 +140,7 @@ def test_success_envelope_and_lazy_engine_monkeypatch(monkeypatch):
     ("atta_deliver", {"formats": ["glb"]}),
     ("atta_run", {"steps": [{"tool": "atta_doctor"}]}),
 ])
-def test_all_ten_handlers_dispatch(monkeypatch, name, args):
+def test_all_twelve_handlers_dispatch(monkeypatch, name, args):
     calls = []
     monkeypatch.setitem(sys.modules, "atta.engine", _fake_engine(calls))
     out = tools.call_tool(name, args)
@@ -210,7 +214,7 @@ def test_timeout_is_enforced_when_requested(monkeypatch):
     assert elapsed < 0.35
 
 
-def test_manifests_have_ten_tools():
+def test_manifests_have_every_tool():
     from atta.agent import manifest
 
     assert len(manifest("openai")) == 12

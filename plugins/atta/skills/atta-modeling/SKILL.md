@@ -1,9 +1,9 @@
 ---
 name: atta-modeling
-description: Use Atta v1.2 through its ten MCP tools for parametric 3D modeling, constraint solving, multi-part assemblies, measured inspection, verification and GLB/OBJ/STL/STEP delivery. Trigger when the user asks to create, edit, solve, assemble, inspect, validate or export a 3D model, or mentions Atta, CAD parts, mates, DOF, STEP, or "make it printable".
+description: Use Atta 1.2.2beta through its twelve MCP tools for parametric 3D modeling, exact CAD, sampled NURBS, bounded fields, multi-part assemblies, bio morphology, measured inspection, verification and GLB/OBJ/STL/STEP delivery. Trigger when the user asks to create, edit, solve, assemble, inspect, validate or export a 3D model, or mentions Atta, CAD parts, mates, DOF, STEP, or "make it printable". For camera, texture or look work use the separate basid program.
 ---
 
-# Atta v1.2 — modeling with receipts
+# Atta 1.2.2beta — modeling with receipts
 
 This is the **ZCode routing stub**. The authoritative procedure lives in one place:
 
@@ -16,13 +16,16 @@ is specific to the ZCode/MCP host.
 
 ## The surface
 
-Ten MCP tools, named `mcp__atta__<verb>`:
+Twelve geometry MCP tools, named `mcp__atta__<verb>`:
 
 `atta_doctor` · `atta_catalog` · `atta_spec` · `atta_model` · `atta_variant`
 `atta_describe` · `atta_verify` · `atta_preview` · `atta_deliver` · `atta_run`
+`atta_conjure` · `atta_design`
 
-Same ten verbs, same arguments, same envelopes as the DSH plugin — both are shells
-over the one Python engine.
+Same verbs, arguments and envelopes as the DSH plugin — both are shells over the
+one Python engine. `atta_conjure` invents a plausible build from a semantic label
+when no real dimensions exist; `atta_design` checks whether the form reads and can
+be manufactured (verify only judges whether it is a valid solid).
 
 ## The rule that matters
 
@@ -68,7 +71,25 @@ The short version: closed manifold · genus matches · pass verdict · wall ≥ 
 minimum · every exposed hard edge beveled · reply carries model_id + verdict +
 dimensions + paths.
 
+## Kernel capabilities
+
+Use `atta_catalog(feature=...)` before constructing the newer graph operations:
+`nurbs_surface` for sampled rational patches, `fillet/chamfer` for the supported
+exact CAD closure, `field_tree` for bounded scalar-field composition, and the
+bio morphology ops (`capsid`, `diatom_frustule`, `pyramidal_neuron`, …) for
+organic structures. Texture, camera and look work belongs to basid; call it
+through `atta.look` or its own MCP tool.
+Assemblies support oriented ports and `attach`; attachment initializes placement,
+while mates and verification determine constraint satisfaction. Source accuracy
+warnings survive booleans and assembly. Neither a sampled tolerance nor a
+closed mesh is an all-domain surface or manufacturing proof.
+
 ## Delivery
+
+Mixed assembly STEP contains only supported exact graph parts and reports
+mesh-only omissions with delivery status `partial`; GLB can contain every part.
+Do not call that STEP a complete assembly. Real backend failures retain their
+original error codes.
 
 `atta_deliver(formats=["glb","obj"])`. STEP (`formats=["step"]`) is analytic B-rep
 for the graph subset; unsupported ops fail with `brep_unsupported` and a fix —

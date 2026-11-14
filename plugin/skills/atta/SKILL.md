@@ -1,9 +1,9 @@
 ---
 name: atta
-description: Atta v1.2 参数化建模与交付：用 recipe 或 Spec v3（JSON）驱动 numpy/Blender 内核，做零件、回转体、曲面、装配、参数求解、结构测量、三态数值验收与 GLB/OBJ/STL/STEP 交付。适用于用户要求建 3D 模型、改尺寸、量壁厚/间隙/体积、批量比较方案、导出 CAD 文件，或需要"建完能证明它对"的场景。
+description: Atta 1.2.2beta 参数化建模与交付：用 recipe 或 Spec v3（JSON）驱动 numpy/Blender 内核，做零件、回转体、曲面、装配、参数求解、结构测量、三态数值验收与 GLB/OBJ/STL/STEP 交付。适用于用户要求建 3D 模型、改尺寸、量壁厚/间隙/体积、批量比较方案、导出 CAD 文件，或需要"建完能证明它对"的场景。
 ---
 
-# Atta v1.2 — 建模出好东西
+# Atta 1.2.2beta — 建模出好东西
 
 你的目标是做出**好看且可验证**的模型，不是跑通工具。本文件是唯一权威。
 细节按需读 `references/`（不要一开始全读）。
@@ -43,6 +43,21 @@ description: Atta v1.2 参数化建模与交付：用 recipe 或 Spec v3（JSON�
 **能套 recipe 就不要写 graph**——recipe 自带参数校验、预设、`expected_genus` 和
 带 `fix` 的 `constraints`，graph 没有这些保护。preset：`safe` / `nominal` / `hero`，
 先 `nominal`；极端比例用 `hero`；要过打印/装配保守值用 `safe`。
+
+**没有可查的真实尺寸**（幻想/虚构题材）：用 `atta_conjure(label=..., build=true)`
+让引擎按内置原型表 + 比例规则 + 种子发明一套可信参数与构建方案，再走
+`describe → verify`。不要上网搜不存在的规格；`seed` 固定则结果可复现。
+
+## 1.2.2beta 新内核能力
+
+先查 `atta_catalog(feature=...)`：`nurbs_surface` 提供有界采样的有理曲面，
+`fillet/chamfer` 在支持的闭包内走同源精确 CAD，`field_tree` 组合有界场。
+定向端口与 `attach` 负责装配初始位姿，最终 DOF/干涉仍由 mates 与 verify 检查。
+曲面未达采样容差的警告会跨布尔和装配保留，不能把拓扑 pass 当作精度证明。
+生物形态 op（`capsid`、`diatom_frustule`、`pyramidal_neuron` 等）仍是可测量、可验收的
+几何构造，不是生物仿真。相机、贴图与外观由独立的 basid 程序负责，可用 `atta.look` 桥接。
+混合装配 STEP 只含 exact graph 零件，mesh-only 明确 omitted，交付为 partial；
+GLB 可含全部零件。不要把部分 STEP 称为完整装配，也不要把采样误差称为全域界。
 
 ## 主循环（必须照这个顺序）
 
@@ -203,6 +218,17 @@ receipt 关键字段：`verdict`、`pass`、`score`、`level`、`checks[]`、`is
 `min_wall_mm`、`clearance` `[{a,b,min}]`、`interference`、`envelope`、`holes`、
 `genus`、`closed`、`n_components`、`dihedral_max_deg`、`curvature_p95_deg`。
 
+## 设计法则检查（不是验收）
+
+`atta_design` 与 `atta_verify` 是两把不同的尺子：verify 只判"是不是合法实体"，
+design 判"形体读不读得懂、能不能造"——轮廓可读性（缩小后还认不认得出）、负空间、
+形体三级层次、比例、对称、可打印性（最小壁厚/悬垂）、可脱模（拔模角）、
+可加工（内角半径）。每条返回 `ok/value/advice`，`ok=null` 表示不适用。
+
+**模型可以 verify=pass 却在 design 失败**，这正是它存在的意义。造型件在 deliver
+前至少跑 `rules=["proportion","printability"]`；要注塑/CNC 时再加
+`moldability` / `machinability`。
+
 ## 交付
 
 `atta_deliver` **先在内部跑 standard verify**：`fail` 直接 block，`degraded` 需
@@ -244,7 +270,7 @@ GLB/OBJ 是三角化派生物。几何真值由 spec + measured facts 保证，�
 
 ## 参考（按需读，不要全读）
 
-- `references/spec-v3.md` — Spec v3 全字段、25 个 graph op、`$param`/`$expr`
+- `references/spec-v3.md` — Spec v3 全字段、graph op、`$param`/`$expr`（最新 op 清单以 `atta_catalog` 为准）
 - `references/solving.md` — `atta_variant` 求解、Pareto、装配级求解
 - `references/assembly.md` — parts/ports/mates、DOF、装配 verify 与交付
 - `references/troubleshooting.md` — 错误码全表与逐步排查

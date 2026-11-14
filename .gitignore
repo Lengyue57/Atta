@@ -2,6 +2,13 @@
 # The workspace Atta writes into (models.json, out/, cache/, blender jobs).
 # Can be relocated with ATTA_HOME; never commit it.
 _atta/
+# Generated texture sets + the raw PNGs they were built from.  Runtime
+# state, content-addressed and rebuildable: a set is reproducible from its
+# source image + the provenance recorded in set.json (backend, prompt, seed,
+# steps, cfg, sampler, post-steps).  Same reasoning as _atta/: artifacts are
+# outputs, never sources.  Override the location with ATTA_TEXTURES.
+textures/
+texgen/
 
 # --- Python ------------------------------------------------------------------
 __pycache__/
@@ -30,6 +37,12 @@ npm-debug.log*
 pnpm-debug.log*
 lib/.build.lock
 lib/.build-ok
+
+# --- Local handover exports and release staging ------------------------------
+# Session transcripts, install backups and release archives stay on the machine
+# that produced them; they are not part of the user-facing package.
+/docs/handoff/
+/releases/
 
 # --- Generated artifacts -----------------------------------------------------
 # Machine-specific MCP config produced by `python3 -m atta.agent.install`.

@@ -1,0 +1,343 @@
+{
+  "schema": "atta.spec/v3",
+  "name": "kernel_showcase",
+  "material": "steel",
+  "model": {
+    "kind": "assembly",
+    "parts": [
+      {
+        "id": "base",
+        "fixed": true,
+        "graph": {
+          "units": "mm",
+          "features": [
+            {
+              "id": "body",
+              "op": "box",
+              "args": {
+                "size": [
+                  60,
+                  40,
+                  10
+                ]
+              }
+            },
+            {
+              "id": "round",
+              "op": "fillet",
+              "inputs": [
+                "body"
+              ],
+              "args": {
+                "radius": 3,
+                "edges": {
+                  "parallel": "z",
+                  "kind": "line",
+                  "expect_count": 4
+                },
+                "linear_deflection": 0.05,
+                "max_triangles": 200000
+              }
+            }
+          ]
+        },
+        "ports": [
+          {
+            "name": "out",
+            "origin_mm": [
+              0,
+              0,
+              10
+            ],
+            "axis": [
+              0,
+              0,
+              1
+            ],
+            "x_axis": [
+              1,
+              0,
+              0
+            ]
+          },
+          {
+            "name": "side",
+            "origin_mm": [
+              30,
+              0,
+              10
+            ],
+            "axis": [
+              1,
+              0,
+              0
+            ],
+            "x_axis": [
+              0,
+              1,
+              0
+            ]
+          }
+        ]
+      },
+      {
+        "id": "panel",
+        "graph": {
+          "units": "mm",
+          "features": [
+            {
+              "id": "skin",
+              "op": "nurbs_surface",
+              "args": {
+                "control_points": [
+                  [
+                    [
+                      0,
+                      0,
+                      0
+                    ],
+                    [
+                      0,
+                      30,
+                      0
+                    ]
+                  ],
+                  [
+                    [
+                      40,
+                      0,
+                      0
+                    ],
+                    [
+                      40,
+                      30,
+                      0
+                    ]
+                  ]
+                ],
+                "tolerance": 0.05,
+                "fail_on_tolerance": true
+              }
+            },
+            {
+              "id": "solid",
+              "op": "thicken",
+              "inputs": [
+                "skin"
+              ],
+              "args": {
+                "thickness": 2
+              }
+            }
+          ]
+        },
+        "ports": [
+          {
+            "name": "in",
+            "origin_mm": [
+              20,
+              15,
+              0
+            ],
+            "axis": [
+              0,
+              0,
+              1
+            ],
+            "x_axis": [
+              1,
+              0,
+              0
+            ]
+          },
+          {
+            "name": "out",
+            "origin_mm": [
+              20,
+              15,
+              2
+            ],
+            "axis": [
+              0,
+              0,
+              1
+            ],
+            "x_axis": [
+              1,
+              0,
+              0
+            ]
+          }
+        ],
+        "attach": {
+          "target": "base",
+          "target_port": "out",
+          "source_port": "in",
+          "gap_mm": 1,
+          "facing": "same"
+        }
+      },
+      {
+        "id": "cap",
+        "graph": {
+          "units": "mm",
+          "features": [
+            {
+              "id": "block",
+              "op": "box",
+              "args": {
+                "size": [
+                  20,
+                  10,
+                  4
+                ]
+              }
+            },
+            {
+              "id": "edge",
+              "op": "chamfer",
+              "inputs": [
+                "block"
+              ],
+              "args": {
+                "length": 1,
+                "edges": {
+                  "parallel": "z",
+                  "kind": "line",
+                  "expect_count": 4
+                }
+              }
+            }
+          ]
+        },
+        "ports": [
+          {
+            "name": "in",
+            "origin_mm": [
+              10,
+              5,
+              0
+            ],
+            "axis": [
+              0,
+              0,
+              1
+            ],
+            "x_axis": [
+              1,
+              0,
+              0
+            ]
+          }
+        ],
+        "attach": {
+          "target": "panel",
+          "target_port": "out",
+          "source_port": "in",
+          "gap_mm": 1,
+          "facing": "same"
+        }
+      },
+      {
+        "id": "lattice",
+        "graph": {
+          "units": "mm",
+          "features": [
+            {
+              "id": "cell",
+              "op": "field_tree",
+              "args": {
+                "tree": {
+                  "op": "intersection",
+                  "children": [
+                    {
+                      "op": "box",
+                      "size": [
+                        20,
+                        20,
+                        8
+                      ]
+                    },
+                    {
+                      "op": "gyroid",
+                      "period": 8,
+                      "band": 0.35
+                    }
+                  ]
+                },
+                "bounds": [
+                  [
+                    -13,
+                    -13,
+                    -7
+                  ],
+                  [
+                    13,
+                    13,
+                    7
+                  ]
+                ],
+                "spacing": 0.5,
+                "min_feature": 1.5,
+                "max_samples": 300000
+              }
+            }
+          ]
+        },
+        "ports": [
+          {
+            "name": "in",
+            "origin_mm": [
+              -12,
+              0,
+              0
+            ],
+            "axis": [
+              1,
+              0,
+              0
+            ],
+            "x_axis": [
+              0,
+              0,
+              1
+            ]
+          }
+        ],
+        "attach": {
+          "target": "base",
+          "target_port": "side",
+          "source_port": "in",
+          "gap_mm": 2,
+          "facing": "same"
+        }
+      }
+    ],
+    "mates": [
+      {
+        "id": "lock_panel",
+        "type": "lock",
+        "a": "base",
+        "b": "panel",
+        "port_a": "out",
+        "port_b": "in"
+      },
+      {
+        "id": "lock_cap",
+        "type": "lock",
+        "a": "panel",
+        "b": "cap",
+        "port_a": "out",
+        "port_b": "in"
+      },
+      {
+        "id": "lock_lattice",
+        "type": "lock",
+        "a": "base",
+        "b": "lattice",
+        "port_a": "side",
+        "port_b": "in"
+      }
+    ]
+  }
+}

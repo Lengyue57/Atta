@@ -1,18 +1,18 @@
 {
   "name": "dev-atta-local",
-  "description": "Local development marketplace for the Atta v1.1 modeling plugin.",
+  "description": "Local development marketplace for the Atta 1.2.2beta modeling plugin.",
   "plugins": [
     {
       "name": "atta",
       "source": "./atta",
-      "version": "1.1.0",
-      "description": "LLM-native parametric modeling with measured facts, hard verify receipts, constrained solving, assemblies and B-rep/STEP delivery. Studio previews, diagnostic passes and image analysis.",
-      "displayName": "Atta v1.1",
+      "version": "1.2.2-beta.3",
+      "description": "LLM-native parametric modeling with exact CAD, sampled NURBS, bounded fields, modular assemblies, bio morphology, measured facts, hard verify receipts and B-rep/STEP delivery.",
+      "displayName": "Atta 1.2.2beta",
       "displayName_i18n": {
-        "zh-CN": "Atta v1.1 建模引擎"
+        "zh-CN": "Atta 1.2.2beta 建模引擎"
       },
       "description_i18n": {
-        "zh-CN": "面向 LLM 的参数化建模：配方 / Spec v3 图 / 装配，实测事实、三态 verify 回执、约束求解与 STEP 交付。"
+        "zh-CN": "面向 LLM 的参数化建模：精确 CAD、采样 NURBS、有界场、模块装配、生物形态、实测事实、三态 verify 回执与 STEP 交付。"
       },
       "category": "developer-tools"
     }

@@ -51,7 +51,7 @@ It deliberately drops:
 Rule: **bpy never leaks upward**. Geometry, facts, and verdicts are computable
 without opening Blender. Blender is the finishing/rendering/export backend.
 
-## 3. The ten tools
+## 3. The twelve geometry tools
 
 | tool | question it answers |
 |---|---|
@@ -65,10 +65,8 @@ without opening Blender. Blender is the finishing/rendering/export backend.
 | `atta_preview` | studio/catalog/dark/clay/diagnostic images + analysis |
 | `atta_deliver` | verify, export GLB/OBJ/STL/BLEND (+STEP subset), manifest |
 | `atta_run` | run a batch pipeline in one call |
-
-`refine` is `atta_model` with `patches`. `fit` is `atta_variant` with a
-`base` model. `probe` is `atta_describe` with `probe`. This keeps the surface
-small without losing power.
+| `atta_conjure` | invent a build plan from an archetype, with provenance |
+| `atta_design` | design/process constraints, separate from geometry validity |
 
 ## 4. Spec v3
 

@@ -23,10 +23,14 @@ def one_line(f: dict) -> str:
     name = str(f.get("name") or "model")[:40]
     size = f.get("size_mm") or [0.0, 0.0, 0.0]
     genus = f.get("genus")
+    small = any(0 < abs(float(s)) < .1 for s in size)
+    dimensions = ("%s: %.5gx%.5gx%.5g mm" if small else "%s: %.1fx%.1fx%.1f mm") % (name, *size)
+    volume_ml = float(f.get("volume_ml") or 0.0)
+    area_cm2 = float(f.get("area_mm2") or 0.0) / 100.0
     bits = [
-        "%s: %.1fx%.1fx%.1f mm" % (name, size[0], size[1], size[2]),
-        "V=%.2f ml" % float(f.get("volume_ml") or 0.0),
-        "A=%.2f cm2" % (float(f.get("area_mm2") or 0.0) / 100.0),
+        dimensions,
+        ("V=%.5g ml" if 0 < volume_ml < .01 else "V=%.2f ml") % volume_ml,
+        ("A=%.5g cm2" if 0 < area_cm2 < .01 else "A=%.2f cm2") % area_cm2,
         "closed=%s" % ("yes" if f.get("closed") else "no"),
         "genus=%s" % ("?" if genus is None else genus),
         "comps=%d" % int(f.get("components") or 0),
@@ -69,9 +73,9 @@ def facts(mesh: M.Mesh, record=None, *, wall: bool = False,
         "quality": rec.get("quality"),
         "bbox_mm": bbox,
         "size_mm": bbox.get("size"),
-        "volume_mm3": round(vol_mm3, 4),
-        "volume_ml": round(vol_mm3 / 1000.0, 4),
-        "area_mm2": round(float(metrics.get("area_mm2") or 0.0), 4),
+        "volume_mm3": metrology._display(vol_mm3, 4),
+        "volume_ml": metrology._display(vol_mm3 / 1000.0, 4),
+        "area_mm2": metrology._display(float(metrics.get("area_mm2") or 0.0), 4),
         "centroid_mm": metrics.get("centroid_mm"),
         "closed": bool(topo["closed"]),
         "genus": topo["genus"],

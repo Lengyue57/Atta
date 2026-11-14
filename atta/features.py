@@ -641,6 +641,64 @@ def _apply(op, p):
 
 # ---------------------------------------------------------------- evaluate
 
+def _graph_closure(rows, index, output):
+    """Validate the reachable DAG before dispatching an optional exact backend."""
+    if output not in index:
+        raise AttaError("unknown_input", "output %r is not a feature id" % output,
+                        path="output", fix="use one of: " + ", ".join(index))
+    visited, active = set(), set()
+    # Iterative traversal also avoids Python recursion for a long CAD chain.
+    pending = [(output, False)]
+    while pending:
+        fid, leaving = pending.pop()
+        if leaving:
+            active.remove(fid)
+            visited.add(fid)
+            continue
+        if fid in visited:
+            continue
+        if fid in active:
+            raise AttaError("cycle", "feature graph has a cycle at %r" % fid,
+                            path="features[%d].inputs" % index[fid],
+                            fix="remove a dependency so the graph is acyclic")
+        row = rows[index[fid]]
+        path = "features[%d]" % index[fid]
+        op = str(row.get("op", "")).lower()
+        entry = FEATURE_OPS.get(op)
+        if entry is None:
+            raise AttaError("unknown_feature", "unknown feature op %r" % op,
+                            path=path + ".op", fix="use a registered feature op")
+        inputs = row.get("inputs", [])
+        if not isinstance(inputs, (list, tuple)):
+            raise AttaError("bad_arg", "inputs must be an array", path=path + ".inputs",
+                            fix="pass a list of feature ids")
+        arity = int(entry["arity"])
+        if (arity < 2 and len(inputs) != arity) or (arity == 2 and len(inputs) < 2):
+            raise AttaError("bad_arg", "%s has incorrect input count" % op,
+                            path=path + ".inputs", fix="use %s inputs" % (
+                                "at least two" if arity == 2 else str(arity)))
+        args = row.get("args", {})
+        if not isinstance(args, dict):
+            raise AttaError("bad_arg", "args must be an object", path=path + ".args",
+                            fix="pass a dict of arguments")
+        allowed = set(entry["required"]) | set(entry["optional"])
+        unexpected = set(args) - allowed
+        missing = set(entry["required"]) - set(args)
+        if unexpected or missing:
+            raise AttaError("bad_arg", "invalid arguments for %s" % op,
+                            path=path + ".args",
+                            fix="required: %s; allowed: %s" % (
+                                ", ".join(entry["required"]), ", ".join(sorted(allowed))))
+        for name in inputs:
+            if not isinstance(name, str) or name not in index:
+                raise AttaError("unknown_input", "unknown input %r" % name,
+                                path=path + ".inputs", fix="use an existing feature id")
+        active.add(fid)
+        pending.append((fid, True))
+        pending.extend((name, False) for name in reversed(inputs))
+    return visited
+
+
 def evaluate(features, params=None, units="mm", output=None) -> Mesh:
     """Evaluate a feature graph and return the output mesh in metres.
 
@@ -671,6 +729,21 @@ def evaluate(features, params=None, units="mm", output=None) -> Mesh:
         index[fid] = i
         rows.append(row)
     params = dict(params or {})
+    # Exact CAD detail operations must share the *whole reachable graph* with
+    # STEP.  Reconstructing an analytic ancestor from an arbitrary mesh would
+    # silently discard edits; mixing mesh booleans after a fillet would produce
+    # a different model on STEP delivery.  Ordinary mesh graphs pay no OCCT cost.
+    if any(str(row.get("op", "")).lower() in ("fillet", "chamfer") for row in rows):
+        out_id = rows[-1]["id"] if output is None else str(output)
+        reachable = _graph_closure(rows, index, out_id)
+        if any(str(rows[index[fid]].get("op", "")).lower() in ("fillet", "chamfer")
+               for fid in reachable):
+            from . import brep
+            mesh = brep.mesh_graph(
+                [row for row in rows if row["id"] in reachable],
+                params=params, units=units, output=out_id)
+            mesh.meta.update({"features": list(index), "output": out_id})
+            return mesh
     memo, state = {}, {}
 
     def ev(fid, stack):

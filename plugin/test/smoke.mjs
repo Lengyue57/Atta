@@ -108,9 +108,14 @@ for (const seam of ['losslessSanitize', 'resolveDefineTool', 'resolveRoot', 'res
 describe('2. tool naming (must never collide with another plugin in the profile)')
 
 const specs = typeof I.toolSpecs === 'function' ? I.toolSpecs() : []
-check('declares exactly 10 tools', specs.length === 10, 'got ' + String(specs.length))
-check('every tool name starts with atta_', specs.every((s) => s.name.startsWith('atta_')),
+check('declares exactly 12 geometry tools', specs.length === 12,
+  'got ' + String(specs.length))
+check('every tool name starts with atta_',
+  specs.every((s) => s.name.startsWith('atta_')),
   specs.map((s) => s.name).filter((n) => !n.startsWith('atta_')).join(','))
+check('the geometry surface stays in one atta_* namespace',
+  specs.filter((s) => s.name.startsWith('atta_')).length === 12,
+  'atta=' + String(specs.filter((s) => s.name.startsWith('atta_')).length))
 check('no tool name uses the blender_ prefix (reference plugin owns it)',
   specs.every((s) => !s.name.startsWith('blender_')))
 check('tool names are unique', new Set(specs.map((s) => s.name)).size === specs.length)
@@ -351,7 +356,7 @@ describe('5. registered surface (through a stand-in host defineTool)')
 {
   const { ctx, registered } = fakeContext()
   mod.apply(ctx, {}, { defineTool: fakeDefineTool })
-  check('all 10 tools registered', registered.length === 10, 'got ' + String(registered.length))
+  check('all 12 tools registered', registered.length === 12, 'got ' + String(registered.length))
   check('registered names match the declared specs',
     JSON.stringify(registered.map((t) => t.name).sort()) === JSON.stringify(specs.map((s) => s.name).sort()))
   check('every tool declares an executable execute()',
@@ -364,11 +369,11 @@ describe('5. registered surface (through a stand-in host defineTool)')
   check('every tool is concurrency-annotated',
     registered.every((t) => typeof t.isConcurrencySafe === 'function'))
   // Model-mutating verbs must NOT advertise concurrency safety.
-  for (const name of ['atta_model', 'atta_variant', 'atta_deliver', 'atta_run', 'atta_verify', 'atta_preview']) {
+  for (const name of ['atta_model', 'atta_variant', 'atta_deliver', 'atta_run', 'atta_verify', 'atta_preview', 'atta_conjure']) {
     const tool = registered.find((t) => t.name === name)
     check(name + ' is not advertised as concurrency-safe', tool && tool.isConcurrencySafe({}) === false)
   }
-  for (const name of ['atta_doctor', 'atta_catalog', 'atta_spec', 'atta_describe']) {
+  for (const name of ['atta_doctor', 'atta_catalog', 'atta_spec', 'atta_describe', 'atta_design']) {
     const tool = registered.find((t) => t.name === name)
     check(name + ' is advertised as concurrency-safe', tool && tool.isConcurrencySafe({}) === true)
   }
@@ -573,12 +578,12 @@ if (!python) {
     doctor.ok && JSON.stringify(doctor.data).includes('workspace'))
 
   // A bad tool name must come back as a value with a code, not a crash.
-  const bogus = await I.callTool('atta_not_a_tool', {}, { workspace: os.tmpdir() })
+  const bogus = await I.callTool('atta_not_a_tool', {}, { workspace: mkdtempSync(path.join(os.tmpdir(), 'atta-smoke-')) })
   check('an unknown verb degrades to an error envelope', bogus.ok === false)
   check('an unknown verb is lossless', isLossless(losslessSanitize(bogus).value))
 
   // The full tool surface must produce host-legal envelopes for a cheap call.
-  const catalog = await I.callTool('atta_catalog', {}, { workspace: os.tmpdir() })
+  const catalog = await I.callTool('atta_catalog', {}, { workspace: mkdtempSync(path.join(os.tmpdir(), 'atta-smoke-')) })
   check('atta_catalog round-trips', catalog.ok === true,
     catalog.ok ? '' : String(catalog.error && catalog.error.message).slice(0, 200))
   check('atta_catalog output is lossless', isLossless(losslessSanitize(catalog).value))
@@ -629,7 +634,7 @@ if (!realHost) {
   try { mod.apply(realCtx, {}, { defineTool: realHost.tools.defineTool }) } catch (error) { applyThrew = error }
   check('apply() registers the surface through the REAL defineTool', applyThrew === null,
     applyThrew ? String(applyThrew.message).slice(0, 200) : '')
-  check('all 10 tools survive real defineTool validation', realRegistered.length === 10,
+  check('all 12 tools survive real defineTool validation', realRegistered.length === 12,
     'registered=' + String(realRegistered.length))
   check('the real host compiled a parameter schema for every tool',
     realRegistered.every((t) => t.parameters && t.parameters.type === 'object'))
@@ -728,7 +733,7 @@ describe('8c. coexistence with the reference blender plugin (one shared profile)
 
   mod.apply(makeSharedCtx('atta'), {}, { defineTool: fakeDefineTool })
   const attaNames = [...shared.keys()].filter((n) => n.startsWith('atta_'))
-  check('atta registers its 10 tools into a shared registry', attaNames.length === 10,
+  check('atta registers its 12 atta_* tools into a shared registry', attaNames.length === 12,
     'got ' + String(attaNames.length))
 
   // The reference plugin's namespace appears in the same registry.
@@ -745,7 +750,7 @@ describe('8c. coexistence with the reference blender plugin (one shared profile)
   check('a second atta copy in the same profile does not throw', threw === null,
     threw ? String(threw.message).slice(0, 160) : '')
   check('the second copy adds only the diagnostic, not duplicates',
-    [...shared.keys()].filter((n) => n.startsWith('atta_')).length === 11,
+    [...shared.keys()].filter((n) => n.startsWith('atta_')).length === 13,
     [...shared.keys()].filter((n) => n.startsWith('atta_')).length + ' atta_* names')
   check('the duplicate is explained in the log',
     shared.log.some((line) => /ALREADY LOADED/.test(line)), shared.log.join(' | ').slice(0, 200))
@@ -763,7 +768,7 @@ describe('8c. coexistence with the reference blender plugin (one shared profile)
 // ── 9. package manifest contract ─────────────────────────────────────────────
 describe('9. package manifest (what the DSH plugin manager actually reads)')
 
-check('version is 1.2.0', PKG.version === '1.2.0', String(PKG.version))
+check('version is 1.2.2-beta.3', PKG.version === '1.2.2-beta.3', String(PKG.version))
 check('package is ESM ("type": "module")', PKG.type === 'module', String(PKG.type))
 check('main points at the shipped entry', PKG.main === './lib/index.js', String(PKG.main))
 check('declares dsh.bundle.patch', Boolean(PKG.dsh && PKG.dsh.bundle && PKG.dsh.bundle.patch))
@@ -904,6 +909,14 @@ describe('11. bundled skill (optional; must never break the tool surface)')
     check('the skill is marked bundled with the atta provider',
       detail.source === 'bundled' && detail.provider === 'atta')
   }
+
+  // One bundled skill: the geometry manual. Look work belongs to basid.
+  I.resetSkillCache()
+  const multi = I.createSkillProviders()
+  check('the bundled geometry skill is discovered',
+    multi.providers.length === 1,
+    'providers=' + String(multi.providers.length) +
+      ' missing=' + multi.missing.join(','))
   I.resetSkillCache()
   check('a missing SKILL.md yields null, not an exception',
     I.readSkill({ dir: '/definitely/not/a/skill/dir' }) === null)

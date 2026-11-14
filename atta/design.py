@@ -67,49 +67,93 @@ def _check(cid, ok, value, advice, *, detail=None):
 
 # ---------------------------------------------------------------- readability
 
-def silhouette_readability(mesh, *, res=64, small=32, threshold=0.90):
-    """Does the form survive being shrunk?  The numeric squint test.
+def _silhouette_mask(mesh, axes, pixels):
+    """Filled projected triangles on one shared pixel-centre coordinate frame.
 
-    Renders the silhouette at ``res`` and at ``small`` pixels and compares them
-    after downsampling.  A form that loses more than ``1 - threshold`` of its
-    overlap at small size has detail that will not read at distance.
+    Unlike vertex splatting, polygon union does not depend on face subdivision.
+    A supersampled mask supplies area coverage for the coarser grid.
     """
-    big = probe.silhouette(mesh, views=("front", "top", "right"), res=res)
-    small_views = probe.silhouette(mesh, views=("front", "top", "right"), res=small)
+    from PIL import Image, ImageDraw
+
+    v = np.asarray(mesh.verts, dtype=np.float64)
+    if not len(v) or not len(mesh.faces):
+        return None, None
+    p = v[:, axes]
+    lo, hi = p.min(axis=0), p.max(axis=0)
+    extent = hi - lo
+    span = float(extent.max())
+    if span <= 0 or not np.isfinite(p).all():
+        return None, None
+    xy = (p - (lo + hi) * 0.5) / span * (pixels - 2) + (pixels - 1) * 0.5
+    image = Image.new("1", (pixels, pixels))
+    draw = ImageDraw.Draw(image)
+    for tri in np.asarray(mesh.faces, dtype=np.int64):
+        draw.polygon([tuple(point) for point in xy[tri]], fill=1)
+    return np.asarray(image, dtype=bool), extent / span
+
+
+def silhouette_readability(mesh, *, res=64, small=32, threshold=0.90):
+    """Sampling heuristic, not a claim that an object is recognizable.
+
+    Compare a filled reference silhouette with its area-downsampled binary
+    reconstruction in the SAME frame. Ignore displacement within half a coarse
+    pixel (the quantization budget). Views thinner than two coarse pixels are
+    explicitly unresolved, rather than evidence of poor modelling.
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    if not (isinstance(res, (int, np.integer)) and isinstance(small, (int, np.integer))
+            and 4 <= small <= res <= 512):
+        raise ValueError("readability requires 4 <= small <= res <= 512")
+    if not math.isfinite(float(threshold)) or not 0 <= threshold <= 1:
+        raise ValueError("readability threshold must be between 0 and 1")
+    factor = max(4, int(math.ceil(res / small)))
+    pixels = small * factor
     out = {}
-    for view in ("front", "top", "right"):
-        b = _bitmap(big["views"].get(view))
-        s = _bitmap(small_views["views"].get(view))
-        if b is None or s is None:
-            out[view] = {"iou": None}
+    for view, axes in (("front", (0, 2)), ("top", (0, 1)), ("right", (1, 2))):
+        b, aspect = _silhouette_mask(mesh, axes, pixels)
+        if b is None:
+            out[view] = {"iou": None, "status": "empty"}
             continue
-        # Downsample the big bitmap to the small grid by majority vote.
-        factor = max(1, res // small)
-        trimmed = b[:small * factor, :small * factor]
-        blocks = trimmed.reshape(small, factor, small, factor)
-        down = blocks.mean(axis=(1, 3)) > 0.5
-        inter = int((down & s).sum())
-        union = int((down | s).sum())
+        width = float(aspect.min() * small)
+        if width < 2.0:
+            out[view] = {"iou": None, "status": "unresolved",
+                         "projected_short_axis_px": round(width, 4)}
+            continue
+        coverage = b.reshape(small, factor, small, factor).mean(axis=(1, 3))
+        # Exact 50% ties retain a feature instead of deleting a centred rod.
+        coarse = coverage >= 0.5
+        reconstructed = np.repeat(np.repeat(coarse, factor, axis=0), factor, axis=1)
+        union = int((b | reconstructed).sum())
+        intersection = int((b & reconstructed).sum())
+        tolerance = factor * 0.5
+        lost = b & (distance_transform_edt(~reconstructed) > tolerance)
+        gained = reconstructed & (distance_transform_edt(~b) > tolerance)
+        residual = int(lost.sum() + gained.sum())
         out[view] = {
-            "iou": round(inter / union, 4) if union else 1.0,
+            "iou": round(1.0 - residual / max(1, union), 4),
+            "raw_iou": round(intersection / max(1, union), 4),
+            "status": "measured", "projected_short_axis_px": round(width, 4),
             "coverage_big": round(float(b.mean()), 4),
-            "coverage_small": round(float(s.mean()), 4),
+            "coverage_small": round(float(coarse.mean()), 4),
         }
     vals = [v["iou"] for v in out.values() if v.get("iou") is not None]
     score = round(float(np.mean(vals)), 4) if vals else None
     ok = None if score is None else bool(score >= threshold)
-    worst = None
-    if vals:
-        worst = min((k for k, v in out.items() if v.get("iou") is not None),
-                    key=lambda k: out[k]["iou"])
-    return _check(
-        "readability", ok, {"score": score, "views": out, "worst_view": worst},
-        ("silhouette survives downsampling; the form reads at distance"
-         if ok else
-         "silhouette collapses when shrunk: the detail is too fine or the "
-         "outline is ambiguous. Enlarge the primary forms and remove "
-         "sub-pixel detail, or make the silhouette more distinct"),
-        detail={"threshold": threshold, "res": res, "small": small})
+    worst = min((k for k, v in out.items() if v.get("iou") is not None),
+                key=lambda k: out[k]["iou"], default=None)
+    unresolved = [k for k, v in out.items() if v["status"] == "unresolved"]
+    advice = ("resolved silhouettes survive sampling within the pixel uncertainty budget"
+              if ok else "resolved silhouettes lose area beyond pixel uncertainty; inspect fine features")
+    if ok is None:
+        advice = "no view can support a readability judgement at this pixel size"
+    if unresolved:
+        advice += "; unresolved thin views: " + ", ".join(unresolved)
+    return _check("readability", ok, {"score": score, "views": out, "worst_view": worst},
+                  advice, detail={"threshold": threshold, "res": res, "small": small,
+                                  "method": "shared_frame_area_sampling",
+                                  "boundary_tolerance_px": 0.5, "heuristic": True,
+                                  "recognition_test": False})
 
 
 def _bitmap(view):
@@ -171,50 +215,75 @@ def negative_space(mesh, *, res=48):
 
 
 def form_hierarchy(mesh, *, bins=12):
-    """Is there a three-scale structure, or one scale?
+    """Connected coplanar patch areas, an advisory hard-surface proxy.
 
-    Uses the distribution of triangle areas as a proxy for feature size: a
-    good hard-surface model has large primary faces, medium secondary faces and
-    a sparse tail of small tertiary faces.  A single dominant scale means the
-    model has one level of detail, which reads as either a blob or noise.
+    A triangle is a discretization element, not a design feature. Merge only
+    genuinely coplanar neighbours before looking at areas. Smooth regions do
+    not have a mesh-independent feature partition; report that limitation and
+    never turn this proxy into an aesthetic pass/fail or a demand for detail.
     """
-    v = np.asarray(mesh.verts, dtype=np.float64)
-    f = np.asarray(mesh.faces, dtype=np.int64)
-    if len(f) == 0:
-        return _check("form_hierarchy", None, {}, "empty mesh")
-    a = v[f[:, 0]]
-    b = v[f[:, 1]]
-    c = v[f[:, 2]]
-    areas = 0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1)
-    areas = areas[areas > 0]
-    if len(areas) < 16:
-        return _check("form_hierarchy", None, {"tris": int(len(areas))},
-                      "too few triangles to judge hierarchy")
+    if not isinstance(bins, (int, np.integer)) or not 1 <= bins <= 128:
+        raise ValueError("bins must be an integer between 1 and 128")
+    m = M.weld(mesh)
+    v, f = m.verts, m.faces
+    if not len(f):
+        return _check("form_hierarchy", None, {}, "empty mesh",
+                      detail={"heuristic": True, "method": "coplanar_patch_area"})
+    normals = np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]])
+    lengths = np.linalg.norm(normals, axis=1)
+    valid = lengths > max(float(lengths.max()) * 1e-14, 1e-30)
+    normals = normals / np.where(lengths[:, None] > 0, lengths[:, None], 1.0)
+    edges = np.sort(np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]]), axis=1)
+    face_ids = np.tile(np.arange(len(f)), 3)
+    order = np.lexsort((edges[:, 1], edges[:, 0]))
+    edges, face_ids = edges[order], face_ids[order]
+    _, starts, counts = np.unique(edges, axis=0, return_index=True, return_counts=True)
+    starts = starts[counts == 2]
+    a, b = face_ids[starts], face_ids[starts + 1]
+    coplanar = (np.einsum("ij,ij->i", normals[a], normals[b]) > 1.0 - 1e-10)
+    coplanar &= valid[a] & valid[b]
+    parent = np.arange(len(f))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i, j in zip(a[coplanar], b[coplanar]):
+        ri, rj = root(i), root(j)
+        if ri != rj:
+            parent[rj] = ri
+    roots = np.array([root(i) for i in range(len(f))])
+    patch_areas = np.bincount(roots, weights=lengths * 0.5)
+    areas = patch_areas[patch_areas > 0]
+    if not len(areas):
+        return _check("form_hierarchy", None, {"tris": len(f)}, "zero-area mesh",
+                      detail={"heuristic": True, "method": "coplanar_patch_area"})
     loga = np.log10(areas)
-    hist, edges = np.histogram(loga, bins=bins)
-    # Count how many distinct "modes" the histogram has: contiguous runs of
-    # bins above a quarter of the peak.
-    peak = float(hist.max()) or 1.0
-    above = hist > 0.25 * peak
-    modes = 0
-    prev = False
-    for flag in above:
-        if flag and not prev:
-            modes += 1
-        prev = bool(flag)
-    ratio = float(areas.max() / max(areas.min(), 1e-18))
-    ok = bool(modes >= 2 and ratio >= 8.0)
+    span = float(np.ptp(loga))
+    # Near-constant floating point areas must not produce zero-width bins.
+    if span < 1e-8:
+        hist = np.zeros(bins, dtype=np.int64)
+        hist[bins // 2] = len(areas)
+        modes = 1
+    else:
+        hist, _ = np.histogram(loga, bins=bins)
+        above = hist > 0.25 * hist.max()
+        modes = int(np.count_nonzero(above & ~np.r_[False, above[:-1]]))
+    ratio = float(areas.max() / areas.min())
+    largest = np.sort(areas)[-min(12, len(areas)):].sum() / areas.sum()
+    status = "planar_proxy" if largest >= 0.5 else "curved_or_fragmented"
     return _check(
-        "form_hierarchy", ok,
-        {"modes": int(modes), "area_ratio": round(ratio, 2),
-         "tris": int(len(areas)),
-         "histogram": [int(h) for h in hist]},
-        ("feature sizes span %d scale(s) (area ratio %.0f:1): primary and "
-         "secondary forms are distinguishable" % (modes, ratio)
-         if ok else
-         "feature sizes cluster at one scale (modes=%d, area ratio %.1f:1). "
-         "Add large primary planes and a few small tertiary details; a single "
-         "scale reads as a blob" % (modes, ratio)))
+        "form_hierarchy", None,
+        {"modes": modes, "area_ratio": round(ratio, 2), "tris": int(len(f)),
+         "patches": int(len(areas)), "histogram": hist.tolist(), "status": status},
+        ("coplanar patches span %d area mode(s); this is an advisory geometric "
+         "proxy, not evidence of primary/secondary/tertiary design hierarchy" % modes)
+        + ("; curved regions have no stable planar feature partition"
+           if status == "curved_or_fragmented" else ""),
+        detail={"heuristic": True, "method": "coplanar_patch_area",
+                "aesthetic_gate": False, "coplanar_angle_tolerance_deg": 0.00081})
 
 
 # ---------------------------------------------------------------- proportion

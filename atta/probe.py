@@ -567,14 +567,59 @@ def clearance(a: M.Mesh, b: M.Mesh, max_samples: int = 2000) -> dict:
             best, best_a, best_b = float(d_ba[j]), p_ba[j], pb[j]
     if not np.isfinite(best):
         best = float("inf")
+    # Surface samples provide an upper bound, never a proof of minimum
+    # clearance.  The enclosing boxes give a cheap conservative lower bound.
+    # Keep min_mm for callers displaying the historical estimate, but expose
+    # the interval so acceptance gates need not mistake that estimate for a
+    # certified minimum (crossing thin plates are a particularly bad case).
+    ba, bb = M.bbox(a), M.bbox(b)
+    gap = np.maximum(0.0, np.maximum(np.asarray(ba["min"]) - bb["max"],
+                                   np.asarray(bb["min"]) - ba["max"]))
+    lower_mm = float(np.linalg.norm(gap) * 1000.0)
+    upper_mm = float(best * 1000.0)
+    bounded = bool(len(af) and len(bf) and np.isfinite(upper_mm))
+    estimate_mm = upper_mm
+    reliable = False
+    method = "kd_centroid+point_triangle"
+    error = None
+    if bounded:
+        try:
+            import manifold3d as manifold
+            # Mesh64 avoids quantising small assembly gaps to float32.
+            ma = manifold.Manifold(manifold.Mesh64(
+                vert_properties=av, tri_verts=np.asarray(af, dtype=np.uint64)))
+            mb = manifold.Manifold(manifold.Mesh64(
+                vert_properties=bv, tri_verts=np.asarray(bf, dtype=np.uint64)))
+            if ma.status() != manifold.Error.NoError or mb.status() != manifold.Error.NoError:
+                raise ValueError("distance inputs are not valid closed manifolds")
+            # min_gap clamps to search_length.  Search beyond a known sample
+            # upper bound so a clamped return cannot masquerade as a distance.
+            search = best + max(1e-9, best * 1e-6)
+            measured = float(ma.min_gap(mb, search))
+            if not np.isfinite(measured) or measured < 0.0 or measured >= search:
+                raise ValueError("native distance did not resolve within the search bound")
+            estimate_mm = measured * 1000.0
+            lower_mm = max(0.0, estimate_mm - 1e-9)
+            upper_mm = estimate_mm + 1e-9
+            reliable = True
+            method = "manifold.min_gap"
+        except Exception as exc:  # noqa: BLE001 - conservative interval remains usable
+            error = "%s: %s" % (type(exc).__name__, exc)
     return {
-        "min_mm": round(best * 1000.0, 4),
-        "distance_mm": round(best * 1000.0, 4),
+        "min_mm": round(estimate_mm, 4),
+        "distance_mm": round(estimate_mm, 4),
+        "lower_bound_mm": lower_mm if bounded else None,
+        "upper_bound_mm": upper_mm if bounded else None,
+        "uncertainty_mm": max(0.0, upper_mm - lower_mm) if bounded else None,
+        "status": "measured" if reliable else ("bounded" if bounded else "unknown"),
+        "reliable": reliable,
+        "error": error,
+        "points_method": "sampled_surface_witness",
         "point_a_mm": [round(float(x) * 1000.0, 3) for x in best_a],
         "point_b_mm": [round(float(x) * 1000.0, 3) for x in best_b],
         "n_samples": int(len(pa) + len(pb)),
         "exact": False,
-        "method": "kd_centroid+point_triangle",
+        "method": method,
     }
 
 
@@ -653,27 +698,40 @@ def interference(a: M.Mesh, b: M.Mesh) -> dict:
     hi = np.minimum(ba["max"], bb["max"])
     vol_m3 = 0.0
     method = "bbox_disjoint"
+    status = "measured"
+    error = None
     if np.all(hi > lo):
         try:
             import trimesh
             ta, tb = _to_trimesh(a), _to_trimesh(b)
             res = trimesh.boolean.intersection([ta, tb], engine="manifold")
             if res is None:
-                vol_m3 = 0.0
-            elif hasattr(res, "volume"):
+                raise ValueError("boolean returned no result")
+            if hasattr(res, "volume"):
                 vol_m3 = abs(float(res.volume))
             elif hasattr(res, "geometry"):
                 vol_m3 = abs(sum(float(g.volume) for g in res.geometry.values()))
+            else:
+                raise ValueError("boolean returned an unsupported result")
             method = "trimesh.boolean.intersection"
             if not np.isfinite(vol_m3):
                 raise ValueError("non-finite boolean volume")
-        except Exception:  # noqa: BLE001 - coarse fallback only
-            vol_m3, _ = _voxel_overlap_m3(a, b)
+        except Exception as exc:  # noqa: BLE001 - diagnostic estimate only
+            error = "%s: %s" % (type(exc).__name__, exc)
+            status = "unknown"
             method = "voxel_sampling"
+            try:
+                vol_m3, _ = _voxel_overlap_m3(a, b)
+            except Exception:  # noqa: BLE001 - preserve the backend failure
+                vol_m3 = 0.0
     vol_mm3 = vol_m3 * 1e9
     return {
         "volume_mm3": round(float(vol_mm3), 4),
+        "volume_mm3_unrounded": float(vol_mm3),
         "intersects": bool(vol_mm3 > 1e-3),
+        "status": status,
+        "reliable": status == "measured",
+        "error": error,
         "overlap_bbox_mm": {
             "min": [round(float(x) * 1000.0, 3) for x in lo],
             "max": [round(float(x) * 1000.0, 3) for x in hi],

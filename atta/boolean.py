@@ -8,6 +8,7 @@ concrete fix instead of returning a broken mesh.
 
 from __future__ import annotations
 
+import json
 import math
 
 import numpy as np
@@ -19,6 +20,89 @@ __all__ = ["boolean", "union", "difference", "intersection", "mirror",
            "pattern_linear", "pattern_polar"]
 
 _OPS = ("union", "difference", "intersection")
+_PROVENANCE_LIMIT = 128
+_PROVENANCE_BYTES = 262144
+_QUALITY_KEYS = ("nurbs", "field", "sampling", "extraction", "decimation",
+                 "field_decimation", "exact", "surface_error_bound")
+
+
+def _quality_provenance(meshes):
+    """Flatten source quality records, never claiming bounds for the result.
+
+    Deduplication prevents repeated CSG on the same sources from growing a
+    binary metadata tree. Hard limits reject rather than drop a source warning.
+    JSON round-tripping also detaches the result from mutable input metadata.
+    """
+    sources, issues = {}, {}
+    total_bytes = visited = 0
+
+    def budget():
+        raise AttaError("geometry_provenance_budget", "geometry quality provenance exceeds its budget",
+                        path="boolean", fix="split the operation into smaller independently verified models")
+
+    def add(table, value):
+        nonlocal total_bytes
+        try:
+            encoded = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                 allow_nan=False)
+        except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+            raise AttaError("bad_arg", "geometry quality metadata must be finite JSON",
+                            path="boolean", fix="provide serializable source quality metadata") from exc
+        if encoded not in table:
+            total_bytes += len(encoded.encode("utf-8"))
+            if len(table) >= _PROVENANCE_LIMIT or total_bytes > _PROVENANCE_BYTES:
+                budget()
+            table[encoded] = json.loads(encoded)
+
+    pending = [m.meta for m in meshes]
+    seen = set()
+    while pending:
+        meta = pending.pop()
+        if not isinstance(meta, dict) or id(meta) in seen:
+            continue
+        seen.add(id(meta))
+        visited += 1
+        if visited > _PROVENANCE_LIMIT * 4:
+            budget()
+        provenance = meta.get("geometry_provenance") or {}
+        if not isinstance(provenance, dict) or not isinstance(meta.get("nurbs", {}), dict):
+            raise AttaError("bad_arg", "source quality records must be objects",
+                            path="boolean", fix="provide structured geometry quality metadata")
+        inherited = provenance.get("sources", [])
+        rows = meta.get("issues") or []
+        parts = meta.get("parts") or []
+        if any(not isinstance(items, list) or len(items) > _PROVENANCE_LIMIT
+               for items in (inherited, rows, parts)):
+            budget()
+        if any(not isinstance(row, dict) for row in inherited + rows + parts):
+            raise AttaError("bad_arg", "source quality records must be objects",
+                            path="boolean", fix="provide structured geometry quality metadata")
+        for source in inherited:
+            add(sources, source)
+        source = {key: meta[key] for key in _QUALITY_KEYS if key in meta}
+        if source:
+            source.update({key: meta[key] for key in ("kind", "op", "part_id") if key in meta})
+            add(sources, source)
+        for issue in rows:
+            if isinstance(issue, dict):
+                add(issues, issue)
+        nurbs = meta.get("nurbs") or {}
+        if nurbs.get("target_met") is False and not any(
+                issue.get("code") == "nurbs_tolerance_unmet" for issue in rows
+                if isinstance(issue, dict)):
+            add(issues, {"code": "nurbs_tolerance_unmet", "severity": "warn",
+                         "message": "a source surface approximation target was not met",
+                         "fix": "increase source tessellation budgets or loosen its tolerance",
+                         "details": {key: nurbs.get(key) for key in
+                                     ("sampled_error", "tolerance", "surface_error_bound")}})
+        pending.extend(parts)
+    result = {}
+    if sources:
+        result["geometry_provenance"] = {"method": "source_quality/v1",
+                                         "sources": list(sources.values())}
+    if issues:
+        result["issues"] = list(issues.values())
+    return result
 
 
 def _to_trimesh(mesh):
@@ -118,7 +202,9 @@ def boolean(a, b, op="union") -> Mesh:
                             path="boolean.%s" % label,
                             fix="pass a watertight mesh; close caps or thicken the surface")
 
+    quality = _quality_provenance((a, b))
     out, backend = _run(a, b, name)
+    out.meta.update(quality)
     out = oriented(out)
     topo = topology(out)
     if not topo["closed"]:
@@ -189,7 +275,8 @@ def pattern_linear(mesh, count, spacing, axis="x") -> Mesh:
     a = _axis_index(axis)
     t = [0.0, 0.0, 0.0]
     t["xyz".index(a)] = d
-    parts = [mesh if i == 0 else mesh.transform(translate=t) for i in range(n)]
+    parts = [mesh if i == 0 else mesh.transform(translate=np.asarray(t) * i)
+             for i in range(n)]
     out = concat(parts)
     out.meta["kind"] = "pattern_linear"
     return out

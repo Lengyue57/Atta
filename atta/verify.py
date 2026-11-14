@@ -472,8 +472,14 @@ def verify(mesh: M.Mesh, *, constraints=None, expected_genus=None,
            else "inconsistent face winding",
            "recalculate normals outward (atta.mesh.oriented) and re-run")
     vol = metrology.volume_mm3(mesh)
-    _check(checks, "volume", vol > 1e-6, "error", vol, "> 0 mm3",
-           "enclosed volume is positive" if vol > 1e-6
+    # Use an object-relative cancellation floor, not a fixed mm^3 cutoff that
+    # rejects every microscopic solid. Display rounding must not decide gates.
+    raw_volume = M.volume(mesh)
+    size = np.asarray(M.bbox(mesh)["size"], dtype=float)
+    volume_floor = float(np.prod(size)) * (64 * np.finfo(float).eps)
+    volume_ok = math.isfinite(raw_volume) and raw_volume > volume_floor
+    _check(checks, "volume", volume_ok, "error", vol, "> numerical volume floor",
+           "enclosed volume is positive" if volume_ok
            else "volume is zero (open, inverted, or degenerate)",
            "make the mesh closed and outward-facing before measuring volume")
     _check(checks, "degenerate_faces", topo["degenerate_faces"] == 0,
@@ -487,6 +493,39 @@ def verify(mesh: M.Mesh, *, constraints=None, expected_genus=None,
            else "multiple disconnected components",
            "union the parts, or verify each part separately and declare an "
            "assembly")
+
+    # Source quality warnings survive edits; they are not bounds on the final
+    # boolean surface. Use the same bounded normalization as boolean propagation.
+    from .boolean import _quality_provenance
+    from .errors import AttaError
+    try:
+        quality = _quality_provenance((mesh,))
+    except AttaError as exc:
+        quality = {}
+        _check(checks, "geometry_issue.provenance", False, "error", exc.code,
+               "complete bounded source quality metadata", exc.message, exc.fix)
+    sources = quality.get("geometry_provenance", {}).get("sources", [])
+    reports = [source["nurbs"] for source in sources
+               if isinstance(source.get("nurbs"), dict)
+               and source["nurbs"].get("target_met") is False]
+    issues = quality.get("issues", [])
+    tolerance_issues = [issue for issue in issues if issue.get("code") == "nurbs_tolerance_unmet"]
+    if reports or tolerance_issues:
+        _check(checks, "surface_tolerance", False,
+               "error" if any(issue.get("severity") == "error" for issue in tolerance_issues)
+               else quality_sev,
+               [report.get("sampled_error") for report in reports],
+               [report.get("tolerance") for report in reports],
+               "a source surface approximation target was not met",
+               "increase source tessellation budgets or loosen its declared tolerance")
+    for i, issue in enumerate(issues):
+        if issue.get("code") == "nurbs_tolerance_unmet" or issue.get("severity") == "info":
+            continue
+        _check(checks, "geometry_issue.%d" % i, False,
+               "error" if issue.get("severity") == "error" else quality_sev,
+               issue, "source quality issues resolved",
+               issue.get("message", "a source geometry quality issue remains unresolved"),
+               issue.get("fix", "resolve the source geometry issue and rebuild"))
 
     # ``basic`` is a cheap gate: it may skip the *expensive geometric* checks
     # (wall, clearance/interference, hole detection, render receipts) but it
@@ -711,14 +750,17 @@ def verify(mesh: M.Mesh, *, constraints=None, expected_genus=None,
                 continue
             if not need_ok:
                 continue
-            got = probe.clearance(pa, pb)["min_mm"]
-            ok = float(got) >= need
+            info = probe.clearance(pa, pb)
+            lower = info.get("lower_bound_mm")
+            ok = lower is not None and float(lower) + 1e-9 >= need
             _check(checks, "clearance.%d" % i, ok, "error",
-                   {"a": a, "b": b, "min_mm": got}, ">=%s" % need,
-                   "clearance %s/%s meets the limit" % (a, b) if ok
-                   else "clearance %s/%s is too small" % (a, b),
-                   "increase the gap between '%s' and '%s' or shrink the "
-                   "mating feature" % (a, b))
+                   {"a": a, "b": b, "min_mm": info["min_mm"],
+                    "lower_bound_mm": lower, "upper_bound_mm": info.get("upper_bound_mm"),
+                    "exact": False}, ">=%s" % need,
+                   "clearance %s/%s is certified by its lower bound" % (a, b) if ok
+                   else "clearance %s/%s is below the limit or not certified" % (a, b),
+                   "increase separation or obtain a tighter certified distance; "
+                   "a sampled upper bound cannot prove minimum clearance")
 
         if cons.get("interference") and not gates:
             _skip(checks, "interference", level,
@@ -741,14 +783,17 @@ def verify(mesh: M.Mesh, *, constraints=None, expected_genus=None,
             if not cap_ok:
                 continue
             info = probe.interference(pa, pb)
-            got = float(info["volume_mm3"])
-            ok = got <= cap
+            got = float(info.get("volume_mm3_unrounded", info["volume_mm3"]))
+            ok = bool(info.get("reliable")) and got <= cap
             _check(checks, "interference.%d" % i, ok, "error",
-                   {"a": a, "b": b, "volume_mm3": got}, "<=%s mm3" % cap,
-                   "no interference between %s/%s" % (a, b) if ok
-                   else "interference between %s/%s" % (a, b),
-                   "separate or resize '%s' and '%s'; boolean intersection "
-                   "volume is %s mm3" % (a, b, got))
+                   {"a": a, "b": b, "volume_mm3": got,
+                    "status": info.get("status"), "method": info.get("method"),
+                    "error": info.get("error")}, "<=%s mm3" % cap,
+                   "interference %s/%s is unresolved" % (a, b) if not info.get("reliable")
+                   else ("no interference between %s/%s" % (a, b) if ok
+                         else "interference between %s/%s" % (a, b)),
+                   "restore the boolean backend or separate/resize '%s' and '%s'; "
+                   "reported volume is %s mm3" % (a, b, got))
 
         if cons.get("interfaces") and not gates:
             _skip(checks, "interface", level,
@@ -770,13 +815,18 @@ def verify(mesh: M.Mesh, *, constraints=None, expected_genus=None,
                 continue
             if not cap_ok:
                 continue
-            got = float(probe.interference(pa, pb)["volume_mm3"])
-            ok = got <= cap
+            info = probe.interference(pa, pb)
+            got = float(info.get("volume_mm3_unrounded", info["volume_mm3"]))
+            ok = bool(info.get("reliable")) and got <= cap
             _check(checks, "interface.%d" % i, ok, "error",
-                   {"a": a, "b": b, "volume_mm3": got}, "<=%s mm3" % cap,
-                   "designed overlap within allowance" if ok
-                   else "designed overlap exceeds the allowance",
-                   "raise max_mm3 only if the press-fit overlap is intended; "
+                   {"a": a, "b": b, "volume_mm3": got,
+                    "status": info.get("status"), "method": info.get("method"),
+                    "error": info.get("error")}, "<=%s mm3" % cap,
+                   "designed overlap is unresolved" if not info.get("reliable")
+                   else ("designed overlap within allowance" if ok
+                         else "designed overlap exceeds the allowance"),
+                   "restore the boolean backend; raise max_mm3 only if the "
+                   "press-fit overlap is intended; "
                    "otherwise change the fit")
 
         if "holes" in cons:

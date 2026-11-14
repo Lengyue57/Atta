@@ -1,0 +1,255 @@
+{
+  "schema": "atta.kernel-benchmark/v1",
+  "baseline": "d371e44",
+  "current_head": "d371e44b26f950e90674098a24f2b9ef63e33d4a",
+  "working_tree_changes": [
+    " M atta/assembly.py",
+    " M atta/boolean.py",
+    " M atta/brep.py",
+    " M atta/conjure.py",
+    " M atta/design.py",
+    " M atta/engine.py",
+    " M atta/families/kernel_ops.py",
+    " M atta/families/lattice.py",
+    " M atta/form.py",
+    " M atta/mesh.py",
+    " M atta/probe.py",
+    " M atta/repair.py",
+    " M atta/sdfkit.py",
+    " M atta/spec.py",
+    " M atta/verify.py",
+    " M tests/test_analysis.py",
+    " M tests/test_assembly.py",
+    " M tests/test_geometry.py",
+    " M tests/test_implicit_brep.py",
+    "?? atta/sdf.py",
+    "?? docs/benchmarks/",
+    "?? scripts/bench_kernel.py",
+    "?? tests/test_conjure_design.py",
+    "?? tests/test_field_budget.py",
+    "?? tests/test_mesh_precision.py",
+    "?? tests/test_repair_budget.py"
+  ],
+  "python": "3.14.4",
+  "platform": "Linux-7.0.0-42-generic-x86_64-with-glibc2.43",
+  "dependencies": {
+    "numpy": "2.5.3",
+    "scipy": "1.18.1",
+    "manifold3d": "3.5.4"
+  },
+  "protocol": {
+    "repetitions": 1,
+    "threads": 1,
+    "address_space_limit_gib": 4,
+    "rss_includes_imports_and_fact_calculation": true,
+    "baseline_modules_share_unchanged_dependencies": true,
+    "face_target_best_effort": true,
+    "note": "Decimation methods differ: baseline has no error budget; current max_error=0.5mm. Timeouts are censored, not measured speedups."
+  },
+  "cases": {
+    "field_sphere": {
+      "baseline": {
+        "status": "ok",
+        "seconds": 1.1214070790001642,
+        "peak_rss_mib": 300.203125,
+        "faces": 77664,
+        "verts": 38834,
+        "mesh_hash": "34179b6da3f0e658252d706ca31153d8ce2e2198b82a70c378f8aa399d7f651d",
+        "topology": {
+          "n_vertices": 38834,
+          "n_tris": 77664,
+          "n_edges": 116496,
+          "boundary_edges": 0,
+          "non_manifold_edges": 0,
+          "inconsistent_winding_edges": 0,
+          "euler": 2,
+          "n_components": 1,
+          "genus": 0,
+          "closed": true,
+          "degenerate_faces": 0,
+          "empty": false
+        },
+        "volume_m3": 4.185745970214662,
+        "samples": 262144
+      },
+      "current": {
+        "status": "ok",
+        "seconds": 0.15209793800022453,
+        "peak_rss_mib": 96.13671875,
+        "faces": 77664,
+        "verts": 38834,
+        "mesh_hash": "34179b6da3f0e658252d706ca31153d8ce2e2198b82a70c378f8aa399d7f651d",
+        "topology": {
+          "n_vertices": 38834,
+          "n_tris": 77664,
+          "n_edges": 116496,
+          "boundary_edges": 0,
+          "non_manifold_edges": 0,
+          "inconsistent_winding_edges": 0,
+          "euler": 2,
+          "n_components": 1,
+          "genus": 0,
+          "closed": true,
+          "degenerate_faces": 0,
+          "empty": false
+        },
+        "volume_m3": 4.185745970214661,
+        "samples": 262144
+      },
+      "same_hash": true
+    },
+    "field_shell": {
+      "baseline": {
+        "status": "ok",
+        "seconds": 1.1078498820006644,
+        "peak_rss_mib": 271.4375,
+        "faces": 100608,
+        "verts": 50308,
+        "mesh_hash": "945b5ba7496fc6b86c95c6e5b6f7703a995bdb925bc70f1d44d01f84fde3d94c",
+        "topology": {
+          "n_vertices": 50308,
+          "n_tris": 100608,
+          "n_edges": 150912,
+          "boundary_edges": 0,
+          "non_manifold_edges": 0,
+          "inconsistent_winding_edges": 0,
+          "euler": 4,
+          "n_components": 2,
+          "genus": 0,
+          "closed": true,
+          "degenerate_faces": 0,
+          "empty": false
+        },
+        "volume_m3": 1.2905981936148965,
+        "samples": 262144
+      },
+      "current": {
+        "status": "ok",
+        "seconds": 0.222612463000587,
+        "peak_rss_mib": 103.5625,
+        "faces": 100608,
+        "verts": 50308,
+        "mesh_hash": "945b5ba7496fc6b86c95c6e5b6f7703a995bdb925bc70f1d44d01f84fde3d94c",
+        "topology": {
+          "n_vertices": 50308,
+          "n_tris": 100608,
+          "n_edges": 150912,
+          "boundary_edges": 0,
+          "non_manifold_edges": 0,
+          "inconsistent_winding_edges": 0,
+          "euler": 4,
+          "n_components": 2,
+          "genus": 0,
+          "closed": true,
+          "degenerate_faces": 0,
+          "empty": false
+        },
+        "volume_m3": 1.290598193614896,
+        "samples": 262144
+      },
+      "same_hash": true
+    },
+    "field_elongated": {
+      "baseline": {
+        "status": "ok",
+        "seconds": 0.5748196219992678,
+        "peak_rss_mib": 144.04296875,
+        "faces": 52296,
+        "verts": 26150,
+        "mesh_hash": "fbea40324daeb8c91cb9cfe94f6df4d3310fe8b131df0130f88a0880f64201b7",
+        "topology": {
+          "n_vertices": 26150,
+          "n_tris": 52296,
+          "n_edges": 78444,
+          "boundary_edges": 0,
+          "non_manifold_edges": 0,
+          "inconsistent_winding_edges": 0,
+          "euler": 2,
+          "n_components": 1,
+          "genus": 0,
+          "closed": true,
+          "degenerate_faces": 0,
+          "empty": false
+        },
+        "volume_m3": 0.026611995461929095,
+        "samples": 108160
+      },
+      "current": {
+        "status": "ok",
+        "seconds": 0.09108226800071861,
+        "peak_rss_mib": 81.34375,
+        "faces": 52296,
+        "verts": 26150,
+        "mesh_hash": "fbea40324daeb8c91cb9cfe94f6df4d3310fe8b131df0130f88a0880f64201b7",
+        "topology": {
+          "n_vertices": 26150,
+          "n_tris": 52296,
+          "n_edges": 78444,
+          "boundary_edges": 0,
+          "non_manifold_edges": 0,
+          "inconsistent_winding_edges": 0,
+          "euler": 2,
+          "n_components": 1,
+          "genus": 0,
+          "closed": true,
+          "degenerate_faces": 0,
+          "empty": false
+        },
+        "volume_m3": 0.026611995461929095,
+        "samples": 108160
+      },
+      "same_hash": true
+    },
+    "field_dense": {
+      "baseline": {
+        "status": "ok",
+        "seconds": 0.2125134589996378,
+        "peak_rss_mib": 143.6484375,
+        "faces": 215640,
+        "verts": 101116,
+        "mesh_hash": "4f004f22f97248682575f65e0634b079fc437396bf82117e6493b1858005e8eb",
+        "topology": {
+          "n_vertices": 101116,
+          "n_tris": 215640,
+          "n_edges": 323460,
+          "boundary_edges": 0,
+          "non_manifold_edges": 0,
+          "inconsistent_winding_edges": 0,
+          "euler": -6704,
+          "n_components": 1,
+          "genus": 3353,
+          "closed": true,
+          "degenerate_faces": 0,
+          "empty": false
+        },
+        "volume_m3": 5.801044764511416,
+        "samples": 32768
+      },
+      "current": {
+        "status": "ok",
+        "seconds": 0.19344508100039093,
+        "peak_rss_mib": 136.6640625,
+        "faces": 215640,
+        "verts": 101116,
+        "mesh_hash": "4f004f22f97248682575f65e0634b079fc437396bf82117e6493b1858005e8eb",
+        "topology": {
+          "n_vertices": 101116,
+          "n_tris": 215640,
+          "n_edges": 323460,
+          "boundary_edges": 0,
+          "non_manifold_edges": 0,
+          "inconsistent_winding_edges": 0,
+          "euler": -6704,
+          "n_components": 1,
+          "genus": 3353,
+          "closed": true,
+          "degenerate_faces": 0,
+          "empty": false
+        },
+        "volume_m3": 5.801044764511414,
+        "samples": 32768
+      },
+      "same_hash": true
+    }
+  }
+}

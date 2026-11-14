@@ -45,7 +45,7 @@ import numpy as np
 
 from ..errors import AttaError
 from ..kit import finish, quality_level
-from ..mesh import Mesh, oriented
+from ..mesh import Mesh
 from ..registry import recipe
 
 __all__ = []
@@ -55,26 +55,6 @@ __all__ = []
 #: corner slivers off the sheet (measured: 3 components), and they are only
 #: held to the body through material outside the slab.
 _PHASE = (0.25, 0.0, 0.0)
-
-#: cube corners, index = x + 2*y + 4*z
-_CORNERS = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0],
-                     [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1]], dtype=np.float64)
-#: 6-tet fan around the 0-7 body diagonal (translation invariant => crack free)
-_TETS = np.array([[0, 1, 3, 7], [0, 3, 2, 7], [0, 2, 6, 7],
-                  [0, 6, 4, 7], [0, 4, 5, 7], [0, 5, 1, 7]], dtype=np.int64)
-#: the 6 edges of a tetrahedron, by local vertex id
-_TET_EDGES = ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))
-#: case -> triangles, each triangle = 3 edge ids of ``_TET_EDGES``.
-#: Winding is not trusted from this table; it is fixed per triangle by the
-#: inside->outside direction, which keeps neighbours consistent.
-_CASES = {
-    1: ((0, 1, 2),), 2: ((0, 3, 4),), 4: ((1, 3, 5),), 8: ((2, 4, 5),),
-    3: ((1, 2, 4), (1, 4, 3)), 5: ((0, 3, 5), (0, 5, 2)),
-    6: ((0, 1, 5), (0, 5, 4)), 7: ((2, 4, 5),),
-    9: ((0, 1, 5), (0, 5, 4)), 10: ((0, 2, 5), (0, 5, 3)),
-    11: ((1, 3, 5),), 12: ((1, 3, 4), (1, 4, 2)),
-    13: ((0, 3, 4),), 14: ((0, 1, 2),),
-}
 
 #: minimum samples across the sheet.  Two things were measured on the way here:
 #: below ~2.2 voxels the marching surface invents/merges handles (genus 462 at
@@ -87,95 +67,10 @@ _MAX_RES = 30
 _MAX_SAMPLES = 2_500_000
 
 
-def marching_tets(field, origin, spacing) -> Mesh:
-    """Extract the ``field < 0`` solid from a regular grid as a closed mesh.
-
-    ``field`` is ``(nx, ny, nz)`` sampled at ``origin + (i, j, k) * spacing``.
-    The result is watertight and single-winding provided ``field > 0`` on the
-    whole boundary of the grid (so the surface is fully enclosed).
-    """
-    f = np.asarray(field, dtype=np.float64)
-    spacing = np.broadcast_to(np.asarray(spacing, dtype=np.float64).reshape(-1),
-                              (3,)).copy()
-    origin = np.asarray(origin, dtype=np.float64).reshape(3)
-    if f.ndim != 3:
-        raise AttaError("bad_arg", "field must be a 3D array", path="field",
-                        fix="pass field[i, j, k]")
-    nx, ny, nz = f.shape
-    cx, cy, cz = nx - 1, ny - 1, nz - 1
-    if min(cx, cy, cz) < 1:
-        raise AttaError("bad_arg", "field needs at least 2 samples per axis",
-                        path="field", fix="increase resolution")
-    n_tot = np.int64(nx) * np.int64(ny) * np.int64(nz)
-
-    # grid node id, and the per-corner id offsets
-    gx, gy, gz = np.meshgrid(np.arange(cx), np.arange(cy), np.arange(cz),
-                             indexing="ij")
-    cell = np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()]).astype(np.int64)
-    del gx, gy, gz
-    base_node = (cell[:, 0] * ny + cell[:, 1]) * nz + cell[:, 2]
-    delta = ((_CORNERS[:, 0].astype(np.int64) * ny
-              + _CORNERS[:, 1].astype(np.int64)) * nz
-             + _CORNERS[:, 2].astype(np.int64))
-
-    F8 = np.empty((len(cell), 8))
-    for c in range(8):
-        o = _CORNERS[c].astype(np.int64)
-        F8[:, c] = f[cell[:, 0] + o[0], cell[:, 1] + o[1], cell[:, 2] + o[2]]
-
-    base = origin + cell * spacing
-    keys_out, pos_out = [], []
-    for tet in _TETS:
-        fv = F8[:, tet]                                     # (C,4)
-        inside = fv < 0.0
-        cid = (inside.astype(np.int64) * np.array([1, 2, 4, 8])).sum(axis=1)
-        if not np.any((cid > 0) & (cid < 15)):
-            continue
-        nodes4 = base_node[:, None] + delta[tet][None, :]    # (C,4) int node ids
-        P = base[:, None, :] + _CORNERS[tet][None, :, :] * spacing   # (C,4,3)
-        # 6 intersection points, one per tet edge
-        E = np.empty((len(cell), 6, 3))
-        K = np.empty((len(cell), 6), dtype=np.int64)
-        for k, (a, b) in enumerate(_TET_EDGES):
-            fa, fb = fv[:, a], fv[:, b]
-            den = fa - fb
-            safe = np.where(np.abs(den) > 0.0, den, 1.0)
-            t = np.clip(fa / safe, 1e-3, 1.0 - 1e-3)
-            E[:, k] = P[:, a] + t[:, None] * (P[:, b] - P[:, a])
-            na, nb = nodes4[:, a], nodes4[:, b]
-            lo, hi = np.minimum(na, nb), np.maximum(na, nb)
-            K[:, k] = lo * n_tot + hi
-        # inside -> outside reference direction (the field gradient's sense)
-        cnt_in = inside.sum(axis=1)[:, None]
-        cin = np.where(inside[:, :, None], P, 0.0).sum(axis=1) / np.maximum(cnt_in, 1)
-        cout = (np.where(~inside[:, :, None], P, 0.0).sum(axis=1)
-                / np.maximum(4 - cnt_in, 1))
-        d = cout - cin
-        for case, tris in _CASES.items():
-            m = cid == case
-            if not m.any():
-                continue
-            for (e0, e1, e2) in tris:
-                q0, q1, q2 = E[m, e0], E[m, e1], E[m, e2]
-                nrm = np.cross(q1 - q0, q2 - q0)
-                flip = np.einsum("ij,ij->i", nrm, d[m]) < 0.0
-                keys_out.append(np.stack([K[m, e0],
-                                          np.where(flip, K[m, e2], K[m, e1]),
-                                          np.where(flip, K[m, e1], K[m, e2])], axis=1))
-                pos_out.append(np.stack([q0,
-                                         np.where(flip[:, None], q2, q1),
-                                         np.where(flip[:, None], q1, q2)], axis=1))
-    if not keys_out:
-        raise AttaError("lattice_empty", "the field has no negative region",
-                        path="field", fix="increase thickness or cell_size")
-    keys = np.concatenate(keys_out, axis=0)          # (T,3)
-    pos = np.concatenate(pos_out, axis=0)            # (T,3,3)
-    uniq, first, inv = np.unique(keys.ravel(), return_index=True,
-                                 return_inverse=True)
-    verts = pos.reshape(-1, 3)[first]
-    faces = inv.reshape(-1, 3).astype(np.int64)
-    mesh = Mesh(verts, faces, {"kind": "marching_tets"})
-    return oriented(mesh)
+def marching_tets(field, origin, spacing, **budgets) -> Mesh:
+    """Compatibility entry point for bounded, exact-edge field extraction."""
+    from ..sdf import marching_tets as extract
+    return extract(field, origin, spacing, **budgets)
 
 
 def _gyroid(x, y, z, k):

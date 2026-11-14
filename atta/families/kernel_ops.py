@@ -184,6 +184,8 @@ def _loft_prepare(args, scale, path):
 
 # ---------------------------------------------------------------- sdf blend
 
+_FIELD_FACE_TARGET = 200_000
+
 def _extent_of_primitives(primitives, half):
     """Half-extent that contains every primitive, never smaller than ``half``."""
     out = np.asarray(half, dtype=np.float64).copy()
@@ -257,25 +259,11 @@ def _wall_between(primitives, cavity):
 
 
 def _fit_spacing(half, spacing, max_samples=1_200_000):
-    """Coarsen ``spacing`` until the sample grid fits ``max_samples``.
+    """Coarsen until the actual padded, rounded grid fits ``max_samples``."""
+    from ..sdf import fit_spacing
 
-    Marching tets holds the field plus several per-cell index arrays, so the
-    real memory cost is roughly 50-80 bytes per sample *and* the extracted mesh
-    can be several times larger than the grid.  1.2 M samples keeps the peak
-    around 100 MB and the mesh near 200-400 k triangles.  There is no cheap
-    decimation fallback (the pure-Python quadric decimator is far too slow at
-    this size), so the sampling budget is the only real control.
-    Returns the (possibly coarsened) spacing.
-    """
     half = np.asarray(half, dtype=np.float64)
-    margin = 2.5 * float(spacing)
-    span = 2.0 * half + 2.0 * margin
-    samples = float(np.prod(np.ceil(span / float(spacing)) + 1.0))
-    if samples <= max_samples:
-        return float(spacing)
-    # Volume scales as spacing^-3, so one cube-root step is exact.
-    factor = (samples / float(max_samples)) ** (1.0 / 3.0)
-    return float(spacing) * factor
+    return fit_spacing(-half, half, spacing, max_samples)
 
 
 def _sdf_blend_op(*, size, primitives, blend_mm=0.0, resolution=48,
@@ -304,20 +292,21 @@ def _sdf_blend_op(*, size, primitives, blend_mm=0.0, resolution=48,
     # can miss it entirely and the field comes back with no negative region at
     # all ("the field has no negative region").  Tighten the spacing to the
     # wall, not to the overall size.
+    wall = None
     if isinstance(cavity, dict):
         wall = _wall_between(primitives, cavity)
         if wall and math.isfinite(wall) and wall > 0.0:
-            # Three samples across the wall is the minimum that resolves it;
-            # more than that only multiplies triangles (a 1 mm wall sampled at
-            # 0.4 mm produced 1.4 M triangles for a mug).
+            # Request three samples across the estimated wall.  The hard sample
+            # budget may coarsen this; report that loss of resolution below.
             spacing = min(spacing, wall / 3.0)
     # Hard sample budget.  A long thin part (a sword is 1070x197x32 mm) sized
     # by its smallest axis produces tens of millions of samples, and marching
     # tets allocates several arrays per cell — that is an out-of-memory kill,
     # not a slow build.  Coarsen the spacing until the grid fits the budget;
     # the caller sees the effective spacing in the result meta.
+    requested_spacing = spacing
     spacing = _fit_spacing(half, spacing)
-    X, Y, Z, org = sdfkit.grid(-half, half, spacing)
+    X, Y, Z, org = sdfkit.grid(-half, half, spacing, max_samples=1_200_000)
 
     phi = None
     for i, prim in enumerate(primitives or []):
@@ -371,9 +360,28 @@ def _sdf_blend_op(*, size, primitives, blend_mm=0.0, resolution=48,
                         path="size",
                         fix="increase size or reduce the primitive extents")
 
+    samples = int(phi.size)
+    # These coordinates and intermediate fields need not survive extraction.
+    del X, Y, Z, d, sides
+    if cavity:
+        del inner
     out = sdfkit.extract(phi, org, spacing)
+    del phi
+    face_target = _FIELD_FACE_TARGET
+    if len(out.faces) > face_target:
+        from ..repair import quadric_decimate
+        out = quadric_decimate(out, face_target, max_error=spacing * 0.25)
+        out.meta["field_decimation"] = {"automatic": True,
+                                         "target_faces": face_target,
+                                         "max_error_m": spacing * 0.25,
+                                         "target_reached": len(out.faces) <= face_target}
     out.meta.update({"op": "sdf_blend", "primitives": len(primitives or []),
-                     "blend_mm": float(blend_mm), "spacing_mm": spacing * 1000.0})
+                     "blend_mm": float(blend_mm) * 1000.0, "spacing_mm": spacing * 1000.0,
+                     "sampling": {"samples": samples, "max_samples": 1_200_000,
+                                  "requested_spacing_mm": requested_spacing * 1000.0,
+                                  "coarsened": spacing > requested_spacing,
+                                  "wall_samples_estimate": (wall / spacing if wall else None),
+                                  "wall_under_resolved": bool(wall and wall / spacing < 3.0)}})
     return out
 
 
@@ -500,20 +508,41 @@ def _scale_primitive(prim, scale, path, i):
 
 # ---------------------------------------------------------------- repair
 
-def _repair_op(*, mesh, fill=True, orient=True, smooth=0, min_faces=8):
+def _repair_op(*, mesh, fill=True, orient=True, smooth=0, min_faces=8,
+               target_faces=None, max_error=None):
     from .. import repair as _repair
     out, report = _repair.repair(mesh, fill=bool(fill), orient=bool(orient),
                                  smooth=int(smooth), min_faces=int(min_faces))
+    if target_faces is not None:
+        out = _repair.quadric_decimate(out, int(target_faces), max_error=max_error)
     out.meta.update({"op": "repair", "repair": report})
     return out
 
 
 def _repair_prepare(args, scale, path):
+    target = args.get("target_faces")
+    if target is not None:
+        value = float(target)
+        if not math.isfinite(value) or value != round(value) or value < 4:
+            raise AttaError("bad_arg", "target_faces must be an integer >= 4",
+                            path=path + ".args.target_faces", fix="use target_faces: 20000")
+        target = int(value)
+    error = args.get("max_error_mm")
+    if error is not None:
+        error = float(error) * scale
+        if not math.isfinite(error) or error < 0:
+            raise AttaError("bad_arg", "max_error_mm must be finite and >= 0",
+                            path=path + ".args.max_error_mm", fix="use max_error_mm: 0.05")
+        if target is None:
+            raise AttaError("bad_arg", "max_error_mm needs target_faces",
+                            path=path + ".args.max_error_mm", fix="add target_faces")
     return {
         "fill": bool(args.get("fill", True)),
         "orient": bool(args.get("orient", True)),
         "smooth": int(round(float(args.get("smooth", 0)))),
         "min_faces": int(round(float(args.get("min_faces", 8)))),
+        "target_faces": target,
+        "max_error": error,
     }
 
 
@@ -591,10 +620,13 @@ def register():
     register_op(
         "repair",
         {"required": (), "arity": 1,
-         "optional": ("fill", "orient", "smooth", "min_faces"),
-         "doc": "Weld, orient, cap holes and drop debris; returns a solid.",
+         "optional": ("fill", "orient", "smooth", "min_faces", "target_faces",
+                      "max_error_mm"),
+         "doc": "Weld, orient, cap holes and drop debris; optional target_faces "
+                "simplifies within max_error_mm and reports unmet targets.",
          "args": {"fill": "bool", "orient": "bool", "smooth": ("int", 0),
-                  "min_faces": ("int", 0)}},
+                  "min_faces": ("int", 0), "target_faces": ("int", 4),
+                  "max_error_mm": "length"}},
         _repair_op,
     )
     _repair_op.prepare = _repair_prepare

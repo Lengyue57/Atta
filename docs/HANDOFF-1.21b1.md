@@ -513,9 +513,67 @@ atta/families/kernel_ops.py
 
 ---
 
-## 十一、参考
+## 十一、接手后增量（2026-11-12）
+
+本轮在未改 `/home/laszapen/DSH/Atta-V1.2`、未改 ZCode 配置、未新增依赖且未提交推送的前提下完成。工作树仍保留全部改动，便于逐项审阅。
+
+### 11.1 几何内核与性能
+
+- 新增 `atta/sdf.py` 的分块活动单元 marching-tets：默认 16,384 cell/chunk，使用全局整数边键跨块去重，不空间 weld；输出默认硬上限 2,000,000 triangles。
+- `lattice.py`、`sdfkit.py`、`form.py` 共用该提取器；`fit_spacing` 按补边和取整后的真实格点数反复粗化，超过预算在分配前失败。
+- `repair.quadric_decimate` 保留历史名称但改为 `manifold3d` 容差简化：显式 `max_error`、拓扑/分量/属保护、`target_reached` 与 `surface_error_bound` 报告；不可证明安全时原样返回，不退回无界纯 Python 边折叠。
+- mesh/metrology 的体积与重心在大世界坐标下先局部平移再积分；实测 1e6 米坐标的小盒仍保持 6,000 mm3 和正确重心。
+
+四类受限新旧对照见 [`docs/benchmarks/kernel-field.json`](benchmarks/kernel-field.json)：球 64³ 1.121→0.152 秒、RSS 300.2→96.1 MiB（哈希完全一致）；壳 1.108→0.223 秒；细长体 0.575→0.091 秒；密集场无活动裁剪收益，保持约 0.21→0.19 秒。百万面球降至 9,998 面约 5.44 秒，体积相对变化约 0.22%，保持 closed/genus=0；旧纯 Python 降面在 10 秒预算内未完成。完整复现实验脚本为 `scripts/bench_kernel.py`。
+
+### 11.2 整体形体与设计检查
+
+- `conjure` 的 mug/bottle/helmet 改为显式 revolve/sweep 薄壳 graph，修复默认多组件/错误 genus；保留开口方向、标称壁厚和拓扑约束。
+- `engine.conjure(build=True)` 现在支持 graph、recipe 和旧单 op 三种 hint，记录实际 bbox 与计划尺寸 delta；recipe 边界变化不再静默吞掉。
+- `provenance` 对 scale/bounds 使用 `derived` 和 `provenance_detail`，不再把推导值冒充 measured；刀剑分区比例实际影响几何。
+- `design.readability` 使用共享投影坐标和面积降采样；细长投影标记 unresolved。`form_hierarchy` 合并共面 patch，并明确 `heuristic`/`ok=None`，不把三角片细分伪装成美学证明。
+- 23 个 recipe、144 个 conjure 组合和 seed 0/7 的 mug/bottle/helmet 校准留在 [`docs/benchmarks/design-calibration.json`](benchmarks/design-calibration.json)。该文件保留失败/非适用信息；三类端到端模型均有 `verify verdict=pass`、spec/mesh hash 和实际 bbox。
+
+### 11.3 装配、验收与 BREP
+
+- 修复 `pattern_linear` 的 `i × spacing` 偏移；四孔阵列回归保持 genus=4。
+- 干涉/间隙检测不再将布尔后端失败或稀疏采样漏检当作 pass：原生 `Manifold.min_gap` 优先；降级结果带上下界和 unknown/reliable 状态，验收闸门对未证实结果 fail-closed。
+- 修复 inline graph/model_id 参数保留、placement 矩阵 mm 往返、非刚体变换拒绝、lock/局部 DOF/SVD 和残差权重掩盖；`solve=False` 在自由度未测时不再伪 pass。
+- 修复 BREP mirror 不重复原体、box min/corner 对齐、`$param`/`$expr` 和前向 DAG 依赖、部分极阵列端点、全局原点 pivot 缩放；开放 cap 不伪造实体 STEP。
+- task-2 已实现并完成验收：`fillet/chamfer` 的输出可达闭包统一走 OCCT，同源 BREP 构造驱动网格和 STEP；几何选边拒绝数字索引和显式 null。共享原生边/顶点连接细分，禁止空间 weld 伪造闭合。公开 Spec 为 mm，低层 API 另支持 cm/m/in。见 [CAD_FEATURES.md](CAD_FEATURES.md)。
+- task-3 已实现并完成验收：定向端口保留 roll，attach 使用确定性 DAG 排序和 proper rotation，求解后位姿/残差可追溯；attach 本身不消除 DOF。见 [MODULE_ASSEMBLY.md](MODULE_ASSEMBLY.md)。
+- 装配 STEP 导出支持 exact graph 子集的最终世界坐标 compound；mesh-only 零件明确 omitted，混合交付为 partial。真实构建/依赖错误保留原始诊断，不改称 mesh-only。
+- 补齐装配验收缺口：通用 bbox/volume 等约束检查整机最终网格；未达 NURBS 容差与父质量问题不能在装配或布尔后变成 pass。默认交付继续阻止 fail/degraded。
+
+### 11.4 验收记录
+
+- 最终全量 `python3 -m pytest -o addopts='' tests/ -q`：**792 passed，5 warnings，202.43s**。本次续接基线为 582，增加 210 项回归；更早的 278/369 是历史快照。五条 warning 来自 trimesh 零体积中间量中心计算，未过滤，最终模型/回执断言通过。
+- 定向测试（覆盖互有重叠）：CAD/BREP 98、Spec 102、装配及相关 245、质量来源/几何/NURBS 147；数值修复独立复验 107 项通过。
+- `atta doctor --deep`：通过，23 recipes、37 feature ops、Blender 5.3.0 可用。没有新增依赖。
+- 新增 `.github/workflows/kernel.yml`，显式加载现有 optional BREP 并运行核心与混合 E2E；仅落盘，未推送，未声称远端 CI 已运行。
+- 关键边界：场预算粗化可能损失薄壁拓扑；RSS 和速度是单次受限观察；最近点/壁厚仍为采样；OCCT 原生分配不受输出三角预算硬约束；不存在制造或全局自交证明。
+
+### 11.5 NURBS、组合场与跨操作质量
+
+- task-1 的 rational tensor-product NURBS 已纳入统一回归：解析一阶导数/法线、非均匀 knot span 覆盖、单 patch 无 T 缝的共享索引细分、预分配预算。仅报告 sampled_error，`surface_error_bound=None`；默认未达采样容差即拒绝。见 [NURBS.md](NURBS.md)。
+- `field_tree` 支持有界 CSG/平滑 CSG/TPMS/transform/shell/offset/noise/twist；128 节点、24 层、采样/计算/三角形硬上限。新增 [FIELD_TREE.md](FIELD_TREE.md) 说明坐标、预算和数值边界。
+- 独立审查完成预算、嵌套、noise、chunk 和 metadata 部分。修复极小/巨大基本体范数、逐节点浮点失败、非法类型和极端 sampling 输入；每个坏节点都返回 AttaError，不能被父 CSG 掩蔽成有效值。极端点距离测试不代表同尺度网格或体积都可用。
+- 布尔保留扁平有界的 `geometry_provenance.sources` 与 issues；不把父曲面参数/误差界冒充结果真值。未达 NURBS 容差在后续布尔、transform、装配中保持 degraded，strict 为 fail。
+- `compile_spec` 的失败关闭覆盖直接 recipe 与 inline spec recipe；坏 placement 数值返回字段化错误，编译不再悄悄少件或放过被 blocked 的内联 recipe。
+
+### 11.6 续接审核结论与正式混合 E2E
+
+- task-2/task-3 均为**修复后可吸收**，不是重新实现。ZCode A/B/C 三项保留并补齐边界，无整项回滚；当轮未提交、未推送，也未篡改旧 DSH 任务状态。
+- `tests/test_kernel_showcase.py` 正式覆盖 validate/model/describe/verify/deliver、格式回读、manifest hash 与错误尺寸阻止交付；[示例说明](../examples/kernel_showcase/README.md) 提供可复制命令。
+- 正式样件 `mdl_599c9f3e0b`，standard **pass**，尺寸 84×40×25 mm、4 个闭合分量、DOF=0。GLB 含全部四件；STEP 有效 compound 含 base/cap 两实体，panel/lattice 明确 omitted，交付状态 partial。
+- `mesh_hash=599c9f3e0bd867a1c93b897d36c3ea9fbaa8f8926fcab85be22da494cbe2f52d`；`spec_hash=156035307b224f59b1ef1867848d2794c999c48dd7af098c22ab25011f7c48ad`。实际回执、manifest、GLB、STEP 和预览位于 `_atta/out/kernel-acceptance-3t26tcue/`。
+- 提取器复测 [kernel-field-acceptance.json](benchmarks/kernel-field-acceptance.json)：球 1.146→0.147s、RSS 300.8→102.7MiB；壳 1.130→0.190s；细长体 0.470→0.087s；密集场 0.206→0.200s。四类输出 hash 与基线相同，非统计性能保证。
+- 保留的能力限制：NURBS 尚无 trim、跨 patch sewing、曲面交线和解析 STEP；STEP compound 不保存完整 CAD 装配关系；约 1010 层串联 transform 的精确构造仍会以 brep_build 拒绝。局部坐标与尺度分层仍必要，不能宣称单一 float64 场景覆盖宇宙到细胞的一切细节。
+
+## 十二、参考
 
 - 项目术语表：[`docs/GLOSSARY.zh-CN.md`](GLOSSARY.zh-CN.md)（517 行，大白话解释所有术语）
 - 架构说明：`docs/ARCHITECTURE.md`（v1.2 原文，未改）
 - 为 LLM 设计的原则：`docs/LLM_NATIVE.md`（v1.2 原文，未改）
 - 上游开源：https://github.com/laszapens/Atta
+- Manifold3D 官方文档：https://manifoldcad.org/docs/html/classmanifold_1_1_manifold.html

@@ -237,6 +237,8 @@ def _commit(mesh: Mesh, spec_obj: dict, finish: dict, *, name: str,
             expected_genus, issues: list, applied: list) -> dict:
     mesh_hash = mesh.hash()
     metrics = _metrics(mesh)
+    issues = list(issues or []) + list(mesh.meta.get("issues") or [])
+    geometry = _jsonable(mesh.meta)
     record = {
         "schema": state.SCHEMA,
         "model_id": state.new_id(mesh_hash),
@@ -247,6 +249,7 @@ def _commit(mesh: Mesh, spec_obj: dict, finish: dict, *, name: str,
         "spec_hash": specmod.spec_hash(spec_obj),
         "mesh_hash": mesh_hash,
         "params": _jsonable(params_display),
+        "geometry": geometry,
         "preset": preset,
         "quality": quality,
         "material": finish.get("material"),
@@ -270,6 +273,7 @@ def _commit(mesh: Mesh, spec_obj: dict, finish: dict, *, name: str,
         "model_id": record["model_id"],
         "model": _summary(record),
         "metrics": _jsonable(metrics),
+        "geometry": geometry,
         "facts": record["facts"],
         "issues": _jsonable(issues or []),
         "applied_patches": _jsonable(applied or []),
@@ -1387,6 +1391,7 @@ def describe(model_id: str | None = None, probe: Any = None,
         "trace": trace_pack,
         "diff": diff_pack,
         "metrics": rec.get("metrics"),
+        "geometry": _jsonable(mesh.meta),
         "mesh_source": "draft",
         "evaluated": False,
         "assumptions": rec.get("assumptions") or [],
@@ -1412,6 +1417,7 @@ def _assembly_summary(rec: dict) -> dict | None:
         "collision": asm.get("collision"),
         "clearance": asm.get("clearance"),
         "placements": rec.get("placements") or asm.get("placements"),
+        "attachments": asm.get("attachments"),
     }
 
 
@@ -1665,6 +1671,22 @@ def _preview_mode_defaults(mode: str) -> dict:
     return out
 
 
+def _preset_name(material) -> str:
+    """The scalar preset a material spec stands on, as a bare name.
+
+    ``finish.material`` is validated as a preset *name* downstream (see
+    ``atta.blender.finish.normalize_finish``), so an inline dict — which is how
+    a textured or per-part spec arrives — must contribute only its ``name``.
+    """
+    if isinstance(material, str):
+        return material or "ceramic"
+    if isinstance(material, Mapping):
+        name = material.get("name")
+        if isinstance(name, str) and name:
+            return name
+    return "ceramic"
+
+
 def _preview_parts(rec: dict, mesh, finish, quality: str, materials_override):
     """Return (parts, assembly_build) for the named-part preview scene."""
     if rec.get("kind") == "assembly":
@@ -1678,26 +1700,36 @@ def _preview_parts(rec: dict, mesh, finish, quality: str, materials_override):
                 or rec.get("material") or "ceramic"
             mat = _preview_material(pid, base, materials_override)
             f = dict(finish or {})
-            f["material"] = mat
+            f["material"] = _preset_name(mat)
             parts.append({"id": pid, "mesh": wm, "finish": f, "material": mat})
         return parts, built
     pid = str(rec.get("name") or "model")
     base = (finish or {}).get("material") or rec.get("material") or "ceramic"
     mat = _preview_material(pid, base, materials_override)
     f = dict(finish or {})
-    f["material"] = mat
+    f["material"] = _preset_name(mat)
     return [{"id": pid, "mesh": mesh, "finish": f, "material": mat}], None
 
 
-def _preview_material(pid: str, base: str, override) -> str:
+def _preview_material(pid: str, base, override):
+    """Resolve the material for one part, **preserving inline specs**.
+
+    ``materials_override`` accepts a preset name, or a mapping
+    ``{part_id: spec, "*": spec}`` where each spec is either a name or an
+    inline dict (``{"name": "steel", "texture_set": "tex_ab12cd34", ...}``).
+    Returning ``str(...)`` here used to flatten that dict into its repr, which
+    surfaced as ``unknown material "{'name': 'steel', ...}"`` at render time —
+    the whole texture pipeline dead-ended there.  Dict specs now pass through
+    to the worker, which is the only layer that knows how to build nodes.
+    """
     if isinstance(override, str) and override:
         return override
     if isinstance(override, Mapping):
         if pid in override:
-            return str(override[pid])
+            return override[pid]
         if "*" in override:
-            return str(override["*"])
-    return str(base or "ceramic")
+            return override["*"]
+    return base or "ceramic"
 
 
 def _preview_analysis(images, *, top_n: int = 3) -> dict:
@@ -1850,6 +1882,29 @@ def preview(model_id: str | None = None, views=None, res: int | None = None,
     }
     analysis = _preview_analysis(images)
     f = factsmod.facts(mesh, rec)
+    # Texture facts: the geometry card says what the part *is*; this says how
+    # the texels landed on it.  Without it "is the texture stretched?" has no
+    # numeric answer, and px/mm + overlap are the two numbers a caller can put
+    # a threshold on.  Additive: absent for a scalar render.
+    if rendered.get("texture_parts") or (rendered.get("finish_applied") or []):
+        _uv = ((rendered.get("finish_applied") or [{}])[0] or {}).get("uv") or {}
+        _density = (_uv.get("texel") or {}).get("texel_density_px_mm") or {}
+        _part = (rendered.get("texture_parts") or [{}])[0] or {}
+        f["texture"] = {
+            "set_id": _part.get("id"),
+            "maps": _part.get("maps") or [],
+            "uv_mode": _uv.get("mode"),
+            "auto_chosen": _uv.get("auto_chosen"),
+            "uv_islands": (_uv.get("islands") or {}).get("count"),
+            "px_per_mm": _density,
+            "texel_density_px_mm": _density.get("median"),
+            "tile_mm": _uv.get("tile_mm_intended"),
+            "scale_mm_effective": _uv.get("scale_mm_effective"),
+            "density_error": _uv.get("density_error"),
+            "overlap_fraction": (_uv.get("overlap") or {}).get("overlap_fraction"),
+            "mirrored": _uv.get("mirrored"),
+            "world_space_assumption": _uv.get("world_space_assumption"),
+        }
     receipt = {
         "schema": "atta.preview/v3",
         "created_at": _now(),
@@ -1955,7 +2010,9 @@ def _deliver_assembly(rec: dict, formats, outdir, allow_degraded: bool,
         "files": files,
         "errors": errors,
         "exact": False,
-        "note": "per-part tessellated derivatives; the spec rebuilds the assembly",
+        "note": ("per-part tessellated derivatives; STEP contains the exact "
+                 "feature-graph parts placed in world coordinates, while "
+                 "mesh-only parts are reported as step omissions"),
         "method": "atta.deliver/v3",
     }
     mpath = Path(out) / ("%s_manifest.json" % stem)
@@ -1980,7 +2037,8 @@ def _deliver_assembly(rec: dict, formats, outdir, allow_degraded: bool,
 
 
 def deliver(model_id: str | None = None, formats=None, outdir: str | None = None,
-            allow_degraded: bool = False, name: str | None = None) -> dict:
+            allow_degraded: bool = False, name: str | None = None,
+            materials=None) -> dict:
     t0 = time.perf_counter()
     rec0 = _require_models(model_id)
     if rec0.get("kind") == "assembly":
@@ -2007,6 +2065,20 @@ def deliver(model_id: str | None = None, formats=None, outdir: str | None = None
     step_wanted = "step" in wanted
     mesh_formats = [f for f in wanted if f != "step"]
     stem = (name or rec.get("name") or rec["model_id"]).replace("/", "_")
+    # A texture/material override has to reach the exporter, not just the
+    # renderer: `finish.material` is a validated preset *name*, so a textured
+    # spec ({"name": "steel", "texture_set": ...}) can only travel as its own
+    # job field.  Without this, a model that renders beautifully with textures
+    # would export a texture-less GLB.
+    material_spec = None
+    if materials is not None:
+        pid = str(rec.get("name") or "model")
+        base = (finish or {}).get("material") or rec.get("material") or "ceramic"
+        override = _preview_material(pid, base, materials)
+        if isinstance(override, Mapping):
+            material_spec = dict(override)
+        elif isinstance(override, str) and override:
+            material_spec = {"name": override}
     out = Path(outdir).expanduser().resolve() if outdir else state.out_dir(rec["model_id"], sub="deliver")
     ex = {"files": []}
     if mesh_formats:
@@ -2029,6 +2101,7 @@ def deliver(model_id: str | None = None, formats=None, outdir: str | None = None
             else:
                 ex = get_runtime(root=str(state.workspace())).export(
                     mesh, finish, formats=mesh_formats, stem=stem, workdir=out,
+                    material=material_spec,
                 )
         except AttaError:
             raise
@@ -2114,6 +2187,7 @@ _TOOL_FUNCS = {
     "atta_doctor": "doctor", "atta_catalog": "catalog", "atta_spec": "spec",
     "atta_model": "model", "atta_variant": "variant", "atta_describe": "describe",
     "atta_verify": "verify", "atta_preview": "preview", "atta_deliver": "deliver",
+    "atta_conjure": "conjure", "atta_design": "design",
 }
 
 
@@ -2244,40 +2318,63 @@ def conjure(label: str, *, seed: int = 0, style: str = "neutral",
         out["next"] = [
             "atta_conjure label=%r build=true" % label,
             "atta_model spec={schema, model:{kind:'graph', features:[%s]}}"
-            % plan["build"].get("op"),
+            % plan["build"].get("op", plan["build"].get("kind", "graph")),
         ]
         out["ms"] = round((time.perf_counter() - t0) * 1000.0, 1)
         return out
 
-    hint = dict(plan["build"])
-    op = str(hint.pop("op", "sdf_blend"))
-    # The build hint carries the invented box as ``size_mm``; the ops want
-    # ``size`` (sdf_blend) or nothing (skeleton, which carries its own joints).
-    box = hint.pop("size_mm", None)
-    if op == "sdf_blend" and "size" not in hint and box is not None:
-        hint["size"] = box
+    hint = copy.deepcopy(plan["build"])
+    kind = hint.get("kind")
+    if kind == "graph":
+        model_plan = {"kind": "graph", "features": hint["features"],
+                      "output": hint["output"]}
+    elif kind == "recipe":
+        # Do not let a recipe's bounded human-scale parameters silently resize
+        # a conjured plan. Unsupported sizes must fail with a concrete issue.
+        rid = hint["recipe"]
+        resolved = recipes.get(rid).resolve(hint.get("params", {}),
+                                            preset=hint.get("preset", "nominal"))
+        if resolved.blocked or resolved.applied_patches:
+            raise AttaError("conjure_recipe_bounds", "recipe would alter the conjured parameters",
+                            path="build.params", details=resolved.issues,
+                            fix="use dimensions within recipe bounds or an explicit feature graph")
+        model_plan = {"kind": "recipe", "id": rid,
+                      "params": hint.get("params", {}),
+                      "preset": hint.get("preset", "nominal")}
+    elif kind is None:
+        op = str(hint.pop("op", "sdf_blend"))
+        box = hint.pop("size_mm", None)
+        if op == "sdf_blend" and "size" not in hint and box is not None:
+            hint["size"] = box
+        model_plan = {"kind": "graph", "output": "body",
+                      "features": [{"id": "body", "op": op, "args": hint}]}
+    else:
+        raise AttaError("bad_arg", "unknown conjure build kind", path="build.kind",
+                        fix="use graph, recipe, or a legacy single op")
     spec_obj = {
         "schema": specmod.SCHEMA,
         "name": str(name or plan["archetype"]["key"]),
-        "model": {
-            "kind": "graph",
-            "output": "body",
-            "features": [{"id": "body", "op": op, "args": hint}],
-        },
+        "model": model_plan,
         "quality": quality,
         "material": "ceramic",
         "finish": {},
-        "constraints": {},
-        "assumptions": [
-            "conjured from archetype %r (seed %d, style %s): dimensions are "
-            "invented, not measured"
-            % (plan["archetype"]["key"], int(seed), style),
-        ],
+        "constraints": copy.deepcopy(plan.get("constraints", {})),
+        "assumptions": list(plan.get("assumptions", [])),
     }
     built = model(spec=spec_obj, quality=quality, name=name)
     out["model"] = built.get("model")
     out["model_id"] = built.get("model_id")
     out["facts"] = built.get("facts")
+    actual = (built.get("facts") or {}).get("bbox_mm", {}).get("size")
+    if actual is None and built.get("model_id"):
+        _, actual_mesh, _ = _load(built["model_id"])
+        actual = metrology.bbox_mm(actual_mesh)["size"]
+    if actual is not None:
+        plan["build_result"] = {
+            "size_mm": actual,
+            "delta_mm": [round(float(a) - float(b), 4)
+                         for a, b in zip(actual, plan["size_mm"])],
+            "source": "mesh measurement", "exact": False}
     out["provenance"] = plan["provenance"]
     out["notes"] = plan["notes"]
     out["next"] = [

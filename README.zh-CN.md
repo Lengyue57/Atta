@@ -8,7 +8,12 @@ Atta 是一个给语言模型驱动的参数化 CAD 内核。你把零件描述�
 Atta 用确定性的 Python 算出几何、**量出真实数字**，然后才允许渲染或导出存在。
 agent 不需要从截图里猜形状，也能在说"做完了"之前证明它是一个闭合实体。
 
-十个工具，23 个 recipe，25 个 feature op。Blender 是可选的。
+**发布版本：atta-1.2.2beta**（Python `1.2.2b3`，插件包 `1.2.2-beta.3`）。
+十二个几何工具，23 个 recipe，47 个 feature op。Blender 是可选后端。
+
+这一版增加了有理 NURBS 曲面、精确 CAD 圆角/倒角与同源 STEP、有界组合场、定向模块装配、
+跨操作质量传播与生物形态算子。相机、贴图和外观由独立的 basid 程序负责。
+能力与边界见[发布说明](docs/RELEASE-1.2.2beta.md)。
 
 ## 它不一样在哪
 
@@ -76,7 +81,7 @@ closed=yes; genus=1; comps=1; convex=0.19; sym=y; holes~1; dih95=3.7
 ..###############..###..
 ```
 
-## 十个工具
+## 十二个工具
 
 每个动词同时也是一个同名 agent 工具（`atta_` 前缀）。
 
@@ -92,6 +97,19 @@ closed=yes; genus=1; comps=1; convex=0.19; sym=y; holes~1; dih95=3.7
 | `atta_preview` | 判断图/展示图 + 图像统计。是判断，不是判决。 |
 | `atta_deliver` | 先 verify，再导出 GLB/OBJ/STL/BLEND（graph spec 另有 STEP）。 |
 | `atta_run` | 一次调用跑多步流水线，用 `$prev` 串接 id。 |
+| `atta_conjure` | 用原型表凭空发明一套构建方案（虚构题材优先），带 provenance。 |
+| `atta_design` | 设计法则与工艺约束检查——模型可以通过 verify 却在这里失败。 |
+
+## 几何之外
+
+- **精确 CAD**：几何选边、OCCT 共享拓扑细分，网格与 STEP 同源。见 [CAD_FEATURES.md](docs/CAD_FEATURES.md)。
+- **NURBS 与有界场**：采样有理曲面与可组合场，显式报告误差和预算。见
+  [NURBS.md](docs/NURBS.md)、[FIELD_TREE.md](docs/FIELD_TREE.md)。
+- **模块装配**：定向端口、确定性 attach、mates/DOF、碰撞门禁与混合精确/网格 STEP。
+  见 [MODULE_ASSEMBLY.md](docs/MODULE_ASSEMBLY.md)。
+- **生物形态**：衣壳、硅藻、神经元、穿孔阀、晶格壳、环堆叠等 graph op。
+- **外观管线**：贴图、相机与带贴图导出由独立的 `basid` 包提供，经可选的
+  [atta.look](docs/BASID.md) 桥接；Atta 本身只做几何。
 
 ## Spec v3
 
@@ -130,6 +148,11 @@ closed=yes; genus=1; comps=1; convex=0.19; sym=y; holes~1; dih95=3.7
 }
 ```
 
+当前共 47 个 op：基本体、`revolve`/`loft`/`loft2`/`sweep`/`sweep2`、Coons/Gordon 曲面、
+`nurbs_surface`、`extrude`、`thicken`、布尔、阵列、`transform`/`mirror`、
+`fillet`/`chamfer`、`offset`/`repair`/`subdivide`、隐式 `gyroid`/`sdf`/`sdf_blend`/`field_tree`、
+文字，以及生物形态算子（`capsid`、`branch_tree`、`pyramidal_neuron`、`diatom_frustule`、
+`perforated_valve`、`perforated_cylinder`、`lattice_shell`、`pore_field_shell`、`ring_stack`）。
 feature 的 `args` 用 mm，可以写 `{"$param": "w"}` 或 `{"$expr": "w/2+4"}`
 （受限算术，不是 `eval`）。完整字段见 `python3 -m atta catalog --verbose`。
 
@@ -221,9 +244,6 @@ curl -s -X POST localhost:8765/call -H 'content-type: application/json' \
 
 Atta 在 `PATH` 上找 Blender；用 `ATTA_BLENDER=/path/to/blender` 固定某个具体版本
 （它是权威的——解析不到就报告"没有 Blender"，而不是悄悄用另一个）。`doctor` 会显示找到的版本。
-
-工作区状态（`models.json`、预览、导出）放在 `$ATTA_HOME/_atta/`，默认是当前目录。
-把 `ATTA_HOME` 指向项目目录可以让多次运行互不干扰，并记得把 `_atta/` 加进该项目的 `.gitignore`。
 
 ## 故障排查
 

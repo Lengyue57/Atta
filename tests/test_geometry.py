@@ -240,11 +240,32 @@ def test_mirror_and_patterns():
     t = topology(lin)
     assert t["closed"] and t["n_components"] == 3
     assert volume(lin) == pytest.approx(3.0 * volume(m), rel=1e-9)
+    assert lin.bbox()["max"][0] == pytest.approx(0.12)
+    assert lin.bbox()["size"][0] == pytest.approx(0.08)
+    for axis in "xyz":
+        patterned = pattern_linear(P.box([0.002] * 3), 4, -0.01, axis=axis)
+        i = "xyz".index(axis)
+        centers = [patterned.verts[j:j + 8].mean(axis=0)[i]
+                   for j in range(0, 32, 8)]
+        assert centers == pytest.approx([0, -0.01, -0.02, -0.03])
 
     pol = pattern_polar(m, 4)
     t = topology(pol)
     assert t["closed"] and t["n_components"] == 4
     assert volume(pol) == pytest.approx(4.0 * volume(m), rel=1e-9)
+
+
+def test_linear_array_boolean_retains_every_hole():
+    graph = [
+        {"id": "plate", "op": "box", "args": {"size": [40, 10, 2], "center": [15, 0, 0]}},
+        {"id": "hole", "op": "cylinder", "args": {"radius": 1, "height": 4, "segments": 32}},
+        {"id": "holes", "op": "pattern_linear", "inputs": ["hole"], "args": {"count": 4, "spacing": 10}},
+        {"id": "out", "op": "difference", "inputs": ["plate", "holes"]},
+    ]
+    result = evaluate(graph)
+    assert topology(result)["closed"] is True
+    assert topology(result)["genus"] == 4
+    assert volume(result) * 1e9 == pytest.approx(800 - 8 * math.pi, rel=0.001)
 
 
 # ---------------------------------------------------------------- features
