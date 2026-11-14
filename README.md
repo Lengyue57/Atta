@@ -14,7 +14,7 @@ before claiming it is done.
 Twelve geometry tools, 23 recipes, 47 feature ops. Blender is optional.
 
 This beta adds rational NURBS patches, exact CAD fillets/chamfers with same-source STEP,
-bounded fields, oriented module assembly and bio-inspired morphology ops. Camera, texture and look work live in the separate
+bounded fields, oriented module assembly and bio-inspired morphology ops. Camera, texture and look work live in the
 separate `basid` program (bridge notes: [BASID.md](docs/BASID.md)). See the
 [1.2.2beta release notes](docs/RELEASE-1.2.2beta.md) for capabilities and limits.
 
