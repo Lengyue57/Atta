@@ -845,6 +845,142 @@ def reference_ops(rec):
 
 
 # ---------------------------------------------------------------- selection
+def _source_url(rec):
+    src = rec.get("source") or {}
+    return str(src.get("url") or "") if isinstance(src, dict) else str(src or "")
+
+
+def exclusion_sets(bench_paths, rows):
+    """Corpus ids and source URLs already used by earlier frozen benches.
+
+    A later bench must be held out from every earlier one: not only by record
+    id, but by *source file* -- sibling modules of one source file share an op
+    vocabulary, and templates were tuned while looking at the earlier bench.
+    """
+    by_id = {}
+    for r in rows:
+        by_id.setdefault(str(r.get("id")), r)
+    ids, urls = set(), set()
+    for path in bench_paths or []:
+        doc = json.load(open(path, encoding="utf-8"))
+        for c in doc.get("cases") or []:
+            cid = str(c.get("corpus_id"))
+            ids.add(cid)
+            if cid in by_id and _source_url(by_id[cid]):
+                urls.add(_source_url(by_id[cid]))
+    return ids, urls
+
+
+def select_cases_v2(rows, n, seed, exclude_ids, exclude_urls, max_per_source=3):
+    """Stratified selection for a bench that must be disjoint from earlier ones.
+
+    Same rules as :func:`select_cases` (held-out families first, shipped-family
+    variants with non-preset parameters <= 30 %, quotas proportional to the
+    coverage matrix ``target_examples``), plus:
+
+    * records whose id or source URL appears in an earlier bench are dropped;
+    * duplicate ids are kept once (first file in sorted order);
+    * at most ``max_per_source`` cases per source URL, so one big library file
+      cannot dominate a category;
+    * a category's quota is filled from its held-out records first, then from
+      its own shipped-family variants (global 30 % cap), and only then topped up
+      from other categories -- so categories with few held-out records (text,
+      organic) are still represented by real records of that category.
+    """
+    import random
+    matrix = json.load(open(os.path.join(ROOT, MATRIX), encoding="utf-8"))
+    quota_w = {c["id"]: int(c.get("target_examples") or 0) for c in matrix["categories"]}
+
+    seen_ids, pool = set(), []
+    for rec in rows:
+        rid = str(rec.get("id"))
+        fam = (rec.get("shape") or {}).get("family")
+        if rid in seen_ids or rid in exclude_ids:
+            continue
+        if not fam or str(rec.get("kind")) not in GEOMETRIC_KINDS or not accepted(rec):
+            continue
+        if _source_url(rec) and _source_url(rec) in exclude_urls:
+            continue
+        seen_ids.add(rid)
+        pool.append(rec)
+
+    held, variants = [], []
+    for rec in pool:
+        covered = excluded_by((rec.get("shape") or {}).get("family"))
+        if covered is None:
+            held.append((rec, None))
+        elif substantive(rec) and _distinct_params(rec, covered):
+            variants.append((rec, covered))
+
+    rng = random.Random(seed)
+
+    def ranked(items):
+        out = []
+        for rec, covered in items:
+            q = rec.get("quality") or {}
+            rank = (2 if substantive(rec) else 0) + (1 if expected_topology(rec) else 0)
+            out.append((rank, float(q.get("quality_score") or 0.0), str(rec.get("id")),
+                        rec, covered))
+        rng.shuffle(out)
+        out.sort(key=lambda t: (-t[0], -t[1], t[2]))
+        return [(t[3], t[4]) for t in out]
+
+    cat_of = lambda rec: (rec.get("shape") or {}).get("category") or "other"
+    cats = sorted({cat_of(r) for r, _ in held} | {cat_of(r) for r, _ in variants})
+    total_w = sum(quota_w.get(c, 5) for c in cats) or 1
+    alloc, remainders = {}, []
+    for c in cats:
+        exact = n * quota_w.get(c, 5) / float(total_w)
+        alloc[c] = int(math.floor(exact))
+        remainders.append((exact - math.floor(exact), c))
+    for _, c in sorted(remainders, reverse=True)[:max(0, n - sum(alloc.values()))]:
+        alloc[c] += 1
+
+    per_source = Counter()
+    chosen, chosen_ids = [], set()
+    max_variants = int(MAX_VARIANT_FRACTION * n)
+
+    def take(item):
+        rec = item[0]
+        url = _source_url(rec)
+        if str(rec.get("id")) in chosen_ids:
+            return False
+        if url and per_source[url] >= max_per_source:
+            return False
+        if item[1] is not None and sum(1 for _r, cv in chosen if cv) >= max_variants:
+            return False
+        chosen.append(item)
+        chosen_ids.add(str(rec.get("id")))
+        if url:
+            per_source[url] += 1
+        return True
+
+    held_by = {c: ranked([h for h in held if cat_of(h[0]) == c]) for c in cats}
+    var_by = {c: ranked([v for v in variants if cat_of(v[0]) == c]) for c in cats}
+    for c in cats:
+        got = 0
+        for item in held_by[c] + var_by[c]:
+            if got >= alloc[c]:
+                break
+            if take(item):
+                got += 1
+    # top up: strongest leftover held-out records first, then variants
+    for group in (held, variants):
+        for item in ranked(group):
+            if len(chosen) >= n:
+                break
+            take(item)
+    chosen.sort(key=lambda t: (str(cat_of(t[0])), str(t[0].get("id"))))
+    return chosen, {"pool": len(pool), "held_pool": len(held),
+                    "variant_pool": len(variants), "alloc": alloc,
+                    "max_per_source": max_per_source}
+
+
+def case_list_sha256(cases):
+    ids = sorted(str(c.get("corpus_id")) for c in cases)
+    return hashlib.sha256("\n".join(ids).encode("utf-8")).hexdigest()
+
+
 def select_cases(rows, n=DEFAULT_N, seed=1102):
     """Deterministic stratified selection of held-out cases."""
     import random
@@ -1327,30 +1463,154 @@ def regenerate(n=DEFAULT_N, seed=1102):
     return cases, state
 
 
+#: per-case fields written by a run; cleared before every run so a case that
+#: fails early can never inherit a pass from the file it was loaded from.
+RESULT_FIELDS = ("model_id", "build_success", "verify_verdict", "verify_pass",
+                 "faithful_build_success", "params_match", "dims_ignored",
+                 "param_recovery_pct", "param_recovery_mm", "seconds", "notes",
+                 "verify_checks_failed", "measured_bbox_mm", "measured_genus",
+                 "measured_components", "topology_match")
+
+
+def reset_results(case):
+    for k in RESULT_FIELDS:
+        case.pop(k, None)
+    case.update({"model_id": None, "build_success": False, "verify_verdict": None,
+                 "verify_pass": False, "faithful_build_success": False,
+                 "params_match": None, "dims_ignored": [], "param_recovery_pct": None,
+                 "param_recovery_mm": None, "seconds": None, "notes": ""})
+    return case
+
+
+def rebuild_cases(cases, rows):
+    """Re-express a frozen case list with the *current* templates.
+
+    The frozen artifact is the list of corpus records (ids + sha); the
+    expression (template, spec, op classification) is what is being measured,
+    so after the op set grows the same records are re-derived from their own
+    corpus entries.  Case ids and order are kept.
+    """
+    by_key, by_id = {}, {}
+    for r in rows:
+        by_key.setdefault((str(r.get("id")), r.get("_source_file")), r)
+        by_id.setdefault(str(r.get("id")), r)
+    out = []
+    for i, case in enumerate(cases):
+        cid = str(case.get("corpus_id"))
+        rec = by_key.get((cid, case.get("corpus_file"))) or by_id.get(cid)
+        if rec is None:
+            raise SystemExit("frozen case %s: corpus record %r is gone"
+                             % (case.get("id"), cid))
+        new = build_case(rec, i)
+        new["id"] = case.get("id") or new["id"]
+        out.append(new)
+    return out
+
+
+def check_freeze(doc):
+    """A frozen bench must still contain exactly the frozen records."""
+    freeze = (doc.get("protocol") or {}).get("freeze") or doc.get("freeze")
+    if not freeze:
+        return None
+    got = case_list_sha256(doc.get("cases") or [])
+    if got != freeze.get("sorted_id_sha256"):
+        raise SystemExit("frozen case list changed: sha %s != frozen %s"
+                         % (got, freeze.get("sorted_id_sha256")))
+    return freeze
+
+
 def main(argv=None):
+    global BENCH_VERSION
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--cases", default=os.path.join(ROOT, "corpus/bench", BENCH_VERSION + ".json"))
+    ap.add_argument("--bench", default=BENCH_VERSION,
+                    help="bench name (generalization_v1, generalization_v2, ...)")
+    ap.add_argument("--cases", default=None,
+                    help="case file (default corpus/bench/<bench>.json)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--regenerate", action="store_true",
                     help="rebuild the case list from corpus/normalized/*.jsonl")
+    ap.add_argument("--freeze", action="store_true",
+                    help="select a NEW case list disjoint from --exclude-bench and "
+                         "write it without running anything")
+    ap.add_argument("--exclude-bench", action="append", default=[],
+                    help="earlier bench file(s) whose records/source URLs are excluded")
+    ap.add_argument("--only-ids", default=None,
+                    help="with --freeze: restrict the pool to the corpus ids in this "
+                         "file (one per line), e.g. freshly harvested records")
+    ap.add_argument("--max-per-source", type=int, default=3)
+    ap.add_argument("--rebuild-specs", action="store_true",
+                    help="re-express the frozen records with the current templates")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--seed", type=int, default=1102)
     ap.add_argument("--cases-count", type=int, default=DEFAULT_N)
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args(argv)
 
+    BENCH_VERSION = args.bench
+    if args.cases is None:
+        args.cases = os.path.join(ROOT, "corpus/bench", BENCH_VERSION + ".json")
     out = args.out or args.cases
+    if args.freeze:
+        rows = load_corpus()
+        state = corpus_state(rows)
+        ex_ids, ex_urls = exclusion_sets(args.exclude_bench, rows)
+        if args.only_ids:
+            keep = {ln.strip() for ln in open(args.only_ids, encoding="utf-8")
+                    if ln.strip() and not ln.startswith("#")}
+            rows = [r for r in rows if str(r.get("id")) in keep]
+        picked, sel = select_cases_v2(rows, args.cases_count, args.seed, ex_ids, ex_urls,
+                                      max_per_source=args.max_per_source)
+        cases = [build_case(rec, i) for i, (rec, _cov) in enumerate(picked)]
+        freeze = {
+            "frozen_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "n_cases": len(cases),
+            "corpus_ids": sorted(str(c["corpus_id"]) for c in cases),
+            "sorted_id_sha256": case_list_sha256(cases),
+            "seed": args.seed,
+            "selection": dict(sel, exclude_benches=[os.path.relpath(p, ROOT)
+                                                    for p in args.exclude_bench],
+                              excluded_ids=len(ex_ids), excluded_source_urls=len(ex_urls),
+                              only_ids=(os.path.relpath(args.only_ids, ROOT)
+                                        if args.only_ids else None)),
+            "corpus_state_at_freeze": state,
+            "freeze_commit": None,
+            "rule": ("case list frozen and committed before any template/op change; "
+                     "scored once at freeze (baseline); later runs must reproduce this "
+                     "sha or the runner refuses"),
+        }
+        proto = protocol_doc(len(cases))
+        proto["freeze"] = freeze
+        doc = {"bench": BENCH_VERSION, "generated_at": freeze["frozen_at"],
+               "protocol": proto, "cases": cases}
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+        with open(out, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, ensure_ascii=False, indent=1)
+        print("froze %d cases -> %s  sha=%s" % (len(cases), out, freeze["sorted_id_sha256"]))
+        print("categories:", Counter(c["category"] for c in cases).most_common())
+        print("variants:", sum(1 for c in cases if c["variant_of_shipped"]),
+              " selection:", json.dumps(sel))
+        return 0
     if args.regenerate:
         cases, state = regenerate(n=args.cases_count, seed=args.seed)
         doc = {"bench": BENCH_VERSION, "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                                                     time.gmtime()),
-               "protocol": protocol_doc(), "cases": cases}
+               "protocol": protocol_doc(len(cases)), "cases": cases}
     else:
         doc = json.load(open(args.cases, encoding="utf-8"))
-        cases, state = doc["cases"], (doc.get("summary") or {}).get("corpus_state") or {}
+        freeze = check_freeze(doc)
         rows = load_corpus()
         state = corpus_state(rows)
-        doc["protocol"] = protocol_doc()
+        cases = doc["cases"]
+        if args.rebuild_specs:
+            cases = rebuild_cases(cases, rows)
+        doc["protocol"] = protocol_doc(len(cases))
+        if freeze:
+            doc["protocol"]["freeze"] = freeze
+        doc["protocol"]["expression"] = ("rebuilt from corpus records with current templates"
+                                         if args.rebuild_specs else
+                                         "specs as stored in the case file")
+    for case in cases:
+        reset_results(case)
 
     todo = cases[: args.limit] if args.limit else cases
     for i, case in enumerate(todo, 1):
@@ -1408,14 +1668,14 @@ def _stage(case):
     return "express"
 
 
-def protocol_doc():
+def protocol_doc(n_cases=None):
     return {
         "name": BENCH_VERSION,
         "requirement": "docs/SHAPE_COVERAGE.md (held-out bench section)",
         "surface": "generic Spec v3 feature graph (atta.spec); shipped recipes are never called",
         "quality": "draft",
         "case_budget_s": CASE_BUDGET_S,
-        "n_cases": DEFAULT_N,
+        "n_cases": n_cases if n_cases is not None else DEFAULT_N,
         "stratification": "categories proportional to docs/coverage_matrix.json target_examples",
         "held_out_rule": ("a case is held out when shape.family does not map to a shipped "
                           "recipe (see excluded_families); shipped-family variants are "
