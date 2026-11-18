@@ -119,11 +119,16 @@ def _build_mug(v, quality="draft"):
         r2 = float(_mug_radius(np.array([z2]), H, rb, belly, top)[0])
         depth = max(3e-4, 0.55 * wall)
         reach = max(r1, r2) + gap
+        dz = z1 - z2
+        # Distribute shoulder points smoothly so the Catmull-Rom centerline
+        # keeps curvature radius > tube_r at every bend (no inner-bend kink).
         ctrl = np.array([
             [r1 - depth, 0.0, z1],
-            [reach, 0.0, z1 + 0.05 * H],
+            [r1 + 0.55 * gap, 0.0, z1 + 0.03 * H],
+            [reach - 0.10 * gap, 0.0, z1 - 0.18 * dz],
             [reach, 0.0, 0.5 * (z1 + z2)],
-            [reach, 0.0, z2 - 0.05 * H],
+            [reach - 0.10 * gap, 0.0, z2 + 0.18 * dz],
+            [r2 + 0.55 * gap, 0.0, z2 - 0.03 * H],
             [r2 - depth, 0.0, z2],
         ])
         path = _C.catmull_rom(ctrl, _q(quality, 8, 14, 24))
