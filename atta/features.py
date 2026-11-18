@@ -174,6 +174,20 @@ def register_op(name, spec, fn):
              "optional": tuple(spec.get("optional", ())),
              "arity": int(spec.get("arity", 0)),
              "doc": str(spec.get("doc", ""))}
+    # Variadic ops (``min_inputs=N``) accept N or more wired inputs and receive
+    # them all as ``meshes=[...]`` (like the built-in booleans) instead of a
+    # single ``mesh``.  ``arity`` is kept for display/back-compat: 1 when one
+    # input suffices, otherwise 2.
+    if spec.get("min_inputs") is not None:
+        try:
+            min_inputs = int(spec["min_inputs"])
+        except (TypeError, ValueError):
+            min_inputs = 0
+        if min_inputs < 1:
+            raise AttaError("bad_arg", "op %r has bad min_inputs" % name,
+                            path="op.spec", fix="min_inputs must be an integer >= 1")
+        entry["min_inputs"] = min_inputs
+        entry["arity"] = 1 if min_inputs == 1 else 2
     for key in ("lengths", "vectors", "ints"):
         if spec.get(key):
             entry[key] = tuple(spec[key])
@@ -549,7 +563,14 @@ def _prepare_extra(op, args, path, scale, meshes=()):
         # A custom prepare owns argument coercion but not graph wiring: the
         # wired input is injected here so an arity>=1 op can never silently
         # ignore its input mesh (this bit every custom prepare that forgot it).
-        if int(FEATURE_OPS[op]["arity"]) >= 1:
+        if FEATURE_OPS[op].get("min_inputs") is not None:
+            if meshes:
+                out.setdefault("meshes", list(meshes))
+            elif "meshes" not in out:
+                raise AttaError("bad_arg", "%s needs input meshes" % op,
+                                path=path + ".inputs",
+                                fix="pass inputs=[\"<id>\", ...]")
+        elif int(FEATURE_OPS[op]["arity"]) >= 1:
             if meshes:
                 out.setdefault("mesh", meshes[0])
             elif "mesh" not in out:
@@ -582,7 +603,12 @@ def _prepare_extra(op, args, path, scale, meshes=()):
             out[key] = value
     # arity>=1 ops always receive their wired input, exactly as the built-ins
     # do by hand.  Without this an extra op silently ignores its input mesh.
-    if int(FEATURE_OPS[op]["arity"]) >= 1 and meshes:
+    if FEATURE_OPS[op].get("min_inputs") is not None:
+        if not meshes:
+            raise AttaError("bad_arg", "%s needs input meshes" % op, path=path + ".inputs",
+                            fix="pass inputs=[\"<id>\", ...]")
+        out["meshes"] = list(meshes)
+    elif int(FEATURE_OPS[op]["arity"]) >= 1 and meshes:
         out["mesh"] = meshes[0]
     elif int(FEATURE_OPS[op]["arity"]) >= 1:
         raise AttaError("bad_arg", "%s needs an input mesh" % op, path=path + ".inputs",
@@ -673,7 +699,13 @@ def _graph_closure(rows, index, output):
             raise AttaError("bad_arg", "inputs must be an array", path=path + ".inputs",
                             fix="pass a list of feature ids")
         arity = int(entry["arity"])
-        if (arity < 2 and len(inputs) != arity) or (arity == 2 and len(inputs) < 2):
+        min_inputs = entry.get("min_inputs")
+        if min_inputs is not None:
+            if len(inputs) < min_inputs:
+                raise AttaError("bad_arg", "%s has incorrect input count" % op,
+                                path=path + ".inputs",
+                                fix="use at least %d input(s)" % min_inputs)
+        elif (arity < 2 and len(inputs) != arity) or (arity == 2 and len(inputs) < 2):
             raise AttaError("bad_arg", "%s has incorrect input count" % op,
                             path=path + ".inputs", fix="use %s inputs" % (
                                 "at least two" if arity == 2 else str(arity)))
@@ -768,13 +800,19 @@ def evaluate(features, params=None, units="mm", output=None) -> Mesh:
             raise AttaError("bad_arg", "inputs must be a list of feature ids",
                             path="features[%d].inputs" % i, fix="pass a list of ids")
         arity = int(spec["arity"])
-        if arity == 0 and len(inputs) != 0:
+        min_inputs = spec.get("min_inputs")
+        if min_inputs is not None:
+            if len(inputs) < min_inputs:
+                raise AttaError("bad_arg", "%s needs at least %d input(s)" % (op, min_inputs),
+                                path="features[%d].inputs" % i,
+                                fix="pass inputs=[\"<id>\", ...]")
+        elif arity == 0 and len(inputs) != 0:
             raise AttaError("bad_arg", "%s takes no inputs" % op, path="features[%d].inputs" % i,
                             fix="remove inputs")
-        if arity == 1 and len(inputs) != 1:
+        elif arity == 1 and len(inputs) != 1:
             raise AttaError("bad_arg", "%s needs exactly one input" % op,
                             path="features[%d].inputs" % i, fix="pass inputs=[\"<id>\"]")
-        if arity == 2 and len(inputs) < 2:
+        elif arity == 2 and len(inputs) < 2:
             raise AttaError("bad_arg", "%s needs at least two inputs" % op,
                             path="features[%d].inputs" % i,
                             fix="pass inputs=[\"<id>\", \"<id>\"]")
