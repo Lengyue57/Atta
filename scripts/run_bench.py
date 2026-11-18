@@ -1544,8 +1544,14 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=1102)
     ap.add_argument("--cases-count", type=int, default=DEFAULT_N)
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--atta-home", default=None,
+                    help="model workspace (default: a fresh temp dir per run, so "
+                         "concurrent runs and stale geometry caches cannot interfere)")
     args = ap.parse_args(argv)
 
+    import tempfile
+    os.environ["ATTA_HOME"] = os.path.abspath(
+        args.atta_home or tempfile.mkdtemp(prefix="atta-bench-"))
     BENCH_VERSION = args.bench
     if args.cases is None:
         args.cases = os.path.join(ROOT, "corpus/bench", BENCH_VERSION + ".json")

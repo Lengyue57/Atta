@@ -1,0 +1,1695 @@
+{
+ "note": "Baseline scores taken at the v2 freeze, before any template/op change. Kernel = v1.2.3-geometry@4a2b6d1 (no swarm ops merged); templates = run_bench.py as of the freeze commit. Each run used a fresh ATTA_HOME. v1 numbers differ from the shipped 2026-11-02 file (verify 94%) because at this kernel text_emboss requires a 3-vector 'at' (3 text_plate cases fail spec validation) and sphere+cone unions now trip the degenerate_faces check (7 cases degraded).",
+ "benches": {
+  "generalization_v1": {
+   "summary": {
+    "cases": 100,
+    "build_success": 0.97,
+    "faithful_build_success": 0.77,
+    "verify_pass": 0.84,
+    "op_coverage": 0.9446,
+    "op_coverage_native": 0.8658,
+    "failure_modes": [
+     [
+      "verify:degraded",
+      7
+     ],
+     [
+      "check:genus",
+      6
+     ],
+     [
+      "build:AttaError",
+      3
+     ],
+     [
+      "check:components",
+      2
+     ],
+     [
+      "check:n_components",
+      2
+     ],
+     [
+      "check:closed",
+      1
+     ],
+     [
+      "check:closed.expected",
+      1
+     ],
+     [
+      "check:degenerate_faces",
+      1
+     ]
+    ],
+    "missing_ops_top": [
+     [
+      "rule",
+      11
+     ],
+     [
+      "startshape",
+      10
+     ],
+     [
+      "cf::symmetry",
+      8
+     ],
+     [
+      "offset",
+      1
+     ],
+     [
+      "libfive_tree",
+      1
+     ],
+     [
+      "hull",
+      1
+     ]
+    ]
+   },
+   "freeze": null,
+   "per_case": {
+    "cfdg_dihedral_ornament13": {
+     "template": "mirror_union",
+     "built": true,
+     "faithful": false,
+     "verify": true
+    },
+    "cfdg_dihedral_ornament6": {
+     "template": "mirror_union",
+     "built": true,
+     "faithful": false,
+     "verify": true
+    },
+    "cfdg_quadtree_facade": {
+     "template": "mirror_union",
+     "built": true,
+     "faithful": false,
+     "verify": true
+    },
+    "cfdg_random_panel_grid": {
+     "template": "mirror_union",
+     "built": true,
+     "faithful": false,
+     "verify": true
+    },
+    "cfdg_spiral_scale_decay": {
+     "template": "mirror_union",
+     "built": true,
+     "faithful": false,
+     "verify": true
+    },
+    "cfdg_tower_growth_forked": {
+     "template": "mirror_union",
+     "built": true,
+     "faithful": false,
+     "verify": true
+    },
+    "cfdg_tower_growth_nested": {
+     "template": "polar_array_cut",
+     "built": true,
+     "faithful": false,
+     "verify": true
+    },
+    "cfdg_tower_growth_recursion": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": false,
+     "verify": true
+    },
+    "pov_room_door_opening": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "pov_room_shell_tiled": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "pov_room_wall_module": {
+     "template": "polar_array_cut",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_hinges_snap_lock": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_belfryscad_bosl2_hinges_snap_socket": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_belfryscad_bosl2_joiners_half_joiner": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_joiners_half_joiner_clear": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_joiners_hirth": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_joiners_joiner": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_joiners_joiner_clear": {
+     "template": "polar_array_cut",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_joiners_half_joiner_clear": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "curv_gyroid_bones_sheet": {
+     "template": "sdf_field",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "curv_menger_sponge": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "curv_schwarz_p_surface": {
+     "template": "sdf_field",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "manifold_sponge_fractal": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "sdfx_gyroid3d_cube": {
+     "template": "gyroid_slab",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "curv_rounded_box_offset": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": false,
+     "verify": true
+    },
+    "jscad_expand_offset_corners": {
+     "template": "text_plate",
+     "built": false,
+     "faithful": false,
+     "verify": false
+    },
+    "jscad_rounded_cuboid": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_ball_bearings_ball_bearing": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_belfryscad_bosl2_linear_bearings_linear_bearing_housing": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_nema_steppers_nema_stepper_motor": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_sliders_slider": {
+     "template": "loft_stack",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_gumyr_cq_warehouse_bearing_bearing": {
+     "template": "mirror_union",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_gumyr_cq_warehouse_bearing_singlerowangularcontactballbea": {
+     "template": "mirror_union",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_gumyr_cq_warehouse_bearing_singlerowcappeddeepgrooveballb": {
+     "template": "mirror_union",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_gumyr_cq_warehouse_bearing_singlerowcylindricalrollerbear": {
+     "template": "mirror_union",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_linear_bearings_linear_bearing_housing": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_nema_steppers_nema11_stepper": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_nema_steppers_nema14_stepper": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_nema_steppers_nema17_stepper": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_nema_steppers_nema23_stepper": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_nema_steppers_nema34_stepper": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_nema_steppers_nema_mount_holes": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_sliders_slider": {
+     "template": "loft_stack",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "cfdg_branching_loop_chain": {
+     "template": "mirror_union",
+     "built": true,
+     "faithful": false,
+     "verify": true
+    },
+    "cfdg_filament_interference": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "cfdg_phyllotaxis_circle": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "curv_flower_petal_lobes": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "curv_gyroid_torus_donut": {
+     "template": "sdf_field",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "curv_hypno_coral_porous": {
+     "template": "sdf_field",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "curv_mandelbulb_fractal": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "libfive_torus_z": {
+     "template": "torus_ring",
+     "built": true,
+     "faithful": false,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_cubetruss_cubetruss_clip": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_cubetruss_cubetruss_segment": {
+     "template": "polar_array_cut",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_cubetruss_cubetruss_support": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_distributors_xflip_copy": {
+     "template": "mirror_union",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_distributors_yflip_copy": {
+     "template": "mirror_union",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_distributors_zflip_copy": {
+     "template": "mirror_union",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_masks_chamfer_corner_mask": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_partitions_partition": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_partitions_partition_cut_mask": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_partitions_partition_mask": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_cadquery_cadquery_ex007_using_point_lists": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_shapes2d_round2d": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_shapes2d_shell2d": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_shapes3d_hemicyl": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_shapes_braced_thinning_wall": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_shapes_corrugated_wall": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_shapes_interior_fillet": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_shapes_narrowing_strut": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_shapes_sparse_strut3d": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_modular_hose_modular_hose": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1274330_parametric_spool_drawers": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1437947_nail_polish_stand_organizer_parame": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1745927_yet_another_nail_polish_organiser": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_251028_cardboard_spool_ring_for_bambu_lab": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_295705_stackable_ammo_box_parametric": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_390924_parametric_garage_boxes": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_439987_dragon_egg_dice_box_inserts_custom": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_566759_hsw_parametric_box": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_637028_rugged_storage_box_parametric_and": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_905693_marsupial_an_economical_microscope": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "curv_lathe_function_revolve": {
+     "template": "revolve_solid",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "fornjot_spacer_annulus": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "fornjot_star_sweep": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_cadquery_cadquery_ex022_revolution": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_irev_dev_round_anything_roundanythingexamples_gridpattern": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_irev_dev_round_anything_unionroundmask_unionround": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": false,
+     "verify": true
+    },
+    "gh_revarbat_bosl_masks_fillet_angled_edge_mask": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_masks_fillet_cylinder_mask": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_masks_fillet_hole_mask": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "manifold_extrude_volume_assert": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "curv_adidas_x_logo": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "jscad_text_outline_round": {
+     "template": "text_plate",
+     "built": false,
+     "faithful": false,
+     "verify": false
+    },
+    "sdfx_text2d_truetype": {
+     "template": "text_plate",
+     "built": false,
+     "faithful": false,
+     "verify": false
+    },
+    "gh_gumyr_cq_warehouse_fastener_bradteenut": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_gumyr_cq_warehouse_fastener_chamferedwasher": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_gumyr_cq_warehouse_fastener_cheeseheadwasher": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_gumyr_cq_warehouse_fastener_domedcapnut": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_gumyr_cq_warehouse_fastener_heatsetnut": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_gumyr_cq_warehouse_fastener_hexnut": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    }
+   }
+  },
+  "generalization_v2": {
+   "summary": {
+    "cases": 160,
+    "build_success": 0.9625,
+    "faithful_build_success": 0.8375,
+    "verify_pass": 0.7438,
+    "op_coverage": 0.9741,
+    "op_coverage_native": 0.8609,
+    "failure_modes": [
+     [
+      "verify:degraded",
+      28
+     ],
+     [
+      "build:AttaError",
+      6
+     ],
+     [
+      "check:genus",
+      6
+     ],
+     [
+      "check:bbox.y",
+      1
+     ]
+    ],
+    "missing_ops_top": [
+     [
+      "polyhedron",
+      4
+     ],
+     [
+      "minkowski",
+      4
+     ],
+     [
+      "projection",
+      3
+     ],
+     [
+      "hull",
+      3
+     ],
+     [
+      "morph",
+      2
+     ],
+     [
+      "smooth",
+      1
+     ]
+    ]
+   },
+   "freeze": "d3077199f80aca8257a42c1a8b41e7950a18db178909b0da04cf1a16320891c1",
+   "per_case": {
+    "prt_166754_roman_columns_for_28mm_gaming": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1875523_starlink_mini_uta_231_camper_roof": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1892724_planter_anchor_for_pedestal_pavers": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_253433_customizable_lego_compatible_text": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_300503_lego_brick_generator_tool_brick_ma": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_336745_christmas_house_family_christmas_o": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_764649_brick_roof_tile_4x2_45_inverted": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_threading_garden_hose_gasket": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": false,
+     "verify": true
+    },
+    "gh_gumyr_cq_warehouse_chain_chain": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_openscad_mcad_lego_compatibility_block": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_phillips_drive_phillips_drive": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_threading_trapezoidal_threaded_nut": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "prt_307580_parametric_hinge": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_754673_heart_shaped_box_w_hinges_encapsul": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_782128_latching_box_parametric_print_in_p": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_78733_parametric_hinged_small_parts_box": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "curv_circlattice_2d": {
+     "template": "text_plate",
+     "built": false,
+     "faithful": false,
+     "verify": false
+    },
+    "curv_engrave_gyroid": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "curv_neovius_surface": {
+     "template": "sdf_field",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "prt_1490123_parametric_tent_corner_straight_bo": {
+     "template": "gyroid_slab",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1761804_auxetic_grip_pad_rotating_squares": {
+     "template": "gyroid_slab",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "prt_604690_bistable_auxetic_structure_paramet": {
+     "template": "gyroid_slab",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "fornjot_holes_blind_hole": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "manifold_minkowski_rounded_star": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "manifold_scallop_tangent_smooth": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "sdfx_voxel_cache_smoothing": {
+     "template": "gyroid_slab",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "gh_belfryscad_bosl2_gears_bevel_gear": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "gh_belfryscad_bosl2_gears_crown_gear": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_gears_globoid_worm": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "gh_belfryscad_bosl2_gears_globoid_worm_gear": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "gh_belfryscad_bosl2_gears_planetary_gears": {
+     "template": "revolve_solid",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_gears_ring_gear": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_hooks_ring_hook": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_gumyr_cq_warehouse_sprocket_sprocket": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_openscad_mcad_bearing_bearing": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_openscad_mcad_bearing_ring": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_openscad_mcad_gridbeam_backboard": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_openscad_mcad_gridbeam_topshelf": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_openscad_mcad_linear_bearing_linearbearing": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_openscad_mcad_linear_bearing_ring": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_openscad_mcad_servos_alignds420": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_openscad_mcad_servos_towerprosg90": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": false,
+     "verify": true
+    },
+    "gh_openscad_mcad_stepper_motor": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_123412_wera_screwdriver_holder": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1390126_lens_adapter_filter_step_up_parame": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1393559_mtb_fork_water_bottle_adapter_para": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1397308_binocular_tripod_clamp_adapter_par": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_146602_compliant_mechanism_toothbrush_hol": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1626825_parametric_hair_tie_and_clip_organ": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1695628_prusa_uss_drybox_and_openprinttag": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_185322_modular_mounting_system_arms_custo": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_223064_can_coozy_car_cup_cell_container_p": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_253402_customizable_christmas_name_orname": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_311438_parametric_rim_valve_adapter": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_349429_openscad_parametric_beoplay_h7_h9": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_40729_parametric_bed_level_test_generato": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_422353_mini_13_printable_jointed_figure": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_427943_playing_card_shuffler_v3": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_458700_universal_magnetic_cable_holder_ca": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_498819_parametric_pipe_adapter": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_501865_turn_any_jar_into_a_fruitfly_trap": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_512107_tape_clip": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_527055_parametric_bicycle_computer_mount": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_725918_leveler": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_740818_parametric_stackable_pcb_standoffs": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_745197_under_desk_cable_holders": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_754613_build_your_own_lightsaber_v2_0": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_761257_amps_pattern_plate_with_17mm_ball": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_775618_apple_wireless_keyboard_wired_conv": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_825508_parametric_j_head_nozzle_holder_no": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_89202_parametric_msata_m2_m_2_2_5_ssd_to": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_902861_clicker_knob": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_981429_bontrager_flare_to_garmin_varia_di": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1892778_reedarc_small_fluted_vase_for_drie": {
+     "template": "polar_array_cut",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_263704_leaf_skeleton": {
+     "template": "loft_stack",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_35790_button_long_snail_shell_parametric": {
+     "template": "loft_stack",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_174715_basic_undivided_gridfinity_boxes_c": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_40158_parametric_box_with_hexagon_cutout": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_748410_seed_condiment_packet_organizer_wi": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_757297_gridfinity_rugged_storage_box_para": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_polyhedra_regular_polyhedron": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "gh_cadquery_cadquery_ex004_extruded_cylindrical_pla": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_justinsdk_dotscad_rounded_cylinder_rounded_cylinder": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_justinsdk_dotscad_rounded_square_rounded_square": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_openscad_mcad_2dshapes_complexroundsquare": {
+     "template": "mirror_union",
+     "built": true,
+     "faithful": false,
+     "verify": true
+    },
+    "gh_openscad_mcad_2dshapes_donutslice": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_openscad_mcad_2dshapes_ngon": {
+     "template": "revolve_solid",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_openscad_mcad_regular_shapes_oval_prism": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_openscad_mcad_regular_shapes_oval_tube": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_openscad_mcad_shapes_ellipsoid": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_openscad_mcad_shapes_ellipticalcylinder": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_openscad_mcad_shapes_tube": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_63301_customizable_wedge": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1148281_simple_mug_cup_parametric": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_146577_parametric_hollow_lattice_pyramid": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1548456_electronics_enclosure_case_paramet": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1680542_hexivault_parametric_mini_case": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1816213_modern_box_with_lid_snap_fit_and_g": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1876738_ultimarc_mini_pac_enclosure_parame": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1892403_custom_size_drawer_organizer_tray": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_189334_parametric_vase_mode_storage_box": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_273582_lattice_marble_maze": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_293485_gen2_open_bin_lack_drawers": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_468166_lunchbox_hepa_carbon_filter_for_pr": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_472184_parametric_minimalistic_tissue_box": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_478633_parametric_memory_card_holder_case": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_650380_parametric_customizable_drawer_box": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_71402_parametric_funnel_redux": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_745970_parametric_darts_case_vase_mode": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_908682_customizable_silica_gel_container": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "curv_blend_hg_sdf": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "curv_sweep_implicit_trefoil": {
+     "template": "sweep_path",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "curv_topology_mug_donut": {
+     "template": "torus_ring",
+     "built": true,
+     "faithful": false,
+     "verify": true
+    },
+    "curv_twist_box": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_beziers_bezpath_curve": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_belfryscad_bosl2_beziers_debug_bezier": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_belfryscad_bosl2_beziers_debug_bezier_patches": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_belfryscad_bosl2_isosurface_mb_connector": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_belfryscad_bosl2_isosurface_mb_stadium": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_isosurface_mb_trapezoid": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_nurbs_debug_nurbs": {
+     "template": "text_plate",
+     "built": false,
+     "faithful": false,
+     "verify": false
+    },
+    "gh_belfryscad_bosl2_nurbs_debug_nurbs_interp": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_belfryscad_bosl2_nurbs_nurbs_interp_surface": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_belfryscad_bosl2_rounding_bent_cutout_mask": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_rounding_convex_offset_extrude": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": false,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_rounding_offset_stroke": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_skin_associate_vertices": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_skin_path_sweep": {
+     "template": "sweep_path",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_skin_sweep_attach": {
+     "template": "sweep_path",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_vnf_debug_vnf": {
+     "template": "box_csg",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_belfryscad_bosl2_vnf_projection": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_belfryscad_bosl2_vnf_vnf_boundary": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_gumyr_build123d_din_rail": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_gumyr_build123d_din_rail_algebra": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_gumyr_build123d_loft": {
+     "template": "loft_stack",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_irev_dev_round_anything_minkowskiround_minkowskiinsideround": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "gh_irev_dev_round_anything_minkowskiround_minkowskioutsideround": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "gh_irev_dev_round_anything_minkowskiround_minkowskiround": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "gh_irev_dev_round_anything_polyround_extrudewithradius": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_irev_dev_round_anything_polyround_internalsq": {
+     "template": "revolve_solid",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_irev_dev_round_anything_polyround_shell2d": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_justinsdk_dotscad_box_extrude_box_extrude": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_justinsdk_dotscad_ring_extrude_ring_extrude": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_openscad_mcad_trochoids_epitrochoidlinear": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_openscad_mcad_trochoids_epitrochoidwborelinear": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_openscad_mcad_trochoids_hypotrochoidlinear": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_beziers_bezier_patch_point": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "gh_revarbat_bosl_beziers_revolve_bezier_offset_shell": {
+     "template": "revolve_shell",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "gh_revarbat_bosl_beziers_trace_bezier": {
+     "template": "sphere_cone_csg",
+     "built": true,
+     "faithful": true,
+     "verify": false
+    },
+    "jscad_extrude_along_bezier": {
+     "template": "sweep_path",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "jscad_extrude_from_slices": {
+     "template": "extrude_profile",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "manifold_torus_knot_warp": {
+     "template": "gyroid_slab",
+     "built": true,
+     "faithful": false,
+     "verify": false
+    },
+    "sdfx_arc_spiral_2d": {
+     "template": "text_plate",
+     "built": false,
+     "faithful": false,
+     "verify": false
+    },
+    "sdfx_flange_tangent_flank": {
+     "template": "text_plate",
+     "built": false,
+     "faithful": false,
+     "verify": false
+    },
+    "prt_120393_chain_links": {
+     "template": "text_plate",
+     "built": false,
+     "faithful": false,
+     "verify": false
+    },
+    "prt_271325_infill_swatch": {
+     "template": "text_plate",
+     "built": false,
+     "faithful": false,
+     "verify": false
+    },
+    "prt_1220476_18650_charger_case_parametric_for": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_1892414_pegboard_hook_pack_with_snap_in_cr": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_779616_tolerance_test_parametric": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    },
+    "prt_868815_physical_fit_testing_blocks": {
+     "template": "plate_holes",
+     "built": true,
+     "faithful": true,
+     "verify": true
+    }
+   }
+  }
+ }
+}
