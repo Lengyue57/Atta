@@ -33,29 +33,32 @@ Minkowski sum $A \oplus B$ across two or more closed manifold inputs (`min_input
 
 - **Required args:** none
 - **Optional args:**
-  - `method` (`"auto" | "exact" | "sdf"`, default `"auto"`)
-  - `resolution` (`int` in `8..128`, default `48`) — used by SDF fallback
+  - `exact` (`bool`, optional) — `False` explicitly selects the bounded SDF
+    approximation; default (`None` / `True`) requires exact evaluation and fails
+    closed on budget exceeded rather than silently degrading
+  - `method` (`"auto" | "exact" | "sdf"`, default `"auto"`) — kept for explicit
+    engine selection; cannot contradict `exact`
+  - `resolution` (`int` in `8..128`, default `48`) — used when `exact=false` or `method="sdf"`
   - `max_vertices` (`int >= 4`, default `500000`, cap `1000000`) — pairwise vertex cloud budget
   - `max_triangles` (`int >= 4`, default `500000`, cap `1500000`)
   - `max_samples` (`int >= 343`, default `500000`, cap `1200000`)
   - `max_face_product` (`int >= 1`, default `12000`, cap `200000`) — threshold for exact non-convex manifold sum
 - **Algorithm & Exactness:**
-  - **Convex $\oplus$ Convex** (when `method != "sdf"`): exact convex hull of
-    pairwise hull-vertex sums $\{a + b : a \in V(A), b \in V(B)\}$. Sets
-    `meta["exact"] = True`, `meta["minkowski"]["exact"] = True`,
+  - **Convex $\oplus$ Convex** (when `exact` is not `False` and `method != "sdf"`):
+    exact convex hull of pairwise hull-vertex sums $\{a + b : a \in V(A), b \in V(B)\}$.
+    Sets `meta["exact"] = True`, `meta["minkowski"]["exact"] = True`,
     `method = "convex_hull_pairwise_sum"`.
-  - **General (non-convex)** when `len(faces_A) * len(faces_B) <= max_face_product`
-    and `method != "sdf"`: exact `manifold3d.Manifold.minkowski_sum` (with
-    tiny simplification only if float32 quantization creates zero-area slivers).
-    Sets `meta["exact"] = True`, `method = "manifold_minkowski_sum"`.
-  - **Documented SDF Approximation** (`method == "sdf"`, or `method == "auto"`
-    when `face_product > max_face_product` or `pairwise_points > max_vertices`):
-    voxel occupancy convolution (`scipy.signal.fftconvolve`) + signed Euclidean
-    distance transform (`distance_transform_edt`) + bounded marching tetrahedra
-    (`sdfkit.extract`). Explicitly marks `meta["exact"] = False` and
-    `meta["minkowski"]["exact"] = False`.
-- **Errors:** `budget_exceeded` (e.g. `method="exact"` above budget),
-  `open_input`, `minkowski_empty`, `minkowski_degenerate`.
+  - **General (non-convex)** within `max_face_product`: exact
+    `manifold3d.Manifold.minkowski_sum` (with tiny simplification only if float32
+    quantization creates zero-area slivers). Sets `meta["exact"] = True`,
+    `method = "manifold_minkowski_sum"`.
+  - **Documented SDF Approximation** (only when explicitly requested via
+    `exact=False` or `method="sdf"`): voxel occupancy convolution
+    (`scipy.signal.fftconvolve`) + unbiased Euclidean signed distance transform
+    (`distance_transform_edt`) + bounded marching tetrahedra (`sdfkit.extract`).
+    Explicitly marks `meta["exact"] = False` and `meta["minkowski"]["exact"] = False`.
+- **Errors:** `budget_exceeded` (exact mode above budget; suggests `exact=false`),
+  `open_input`, `minkowski_empty`, `minkowski_degenerate`, `bad_arg`.
 
 ### 3. `polyhedron`
 OpenSCAD-style solid from explicit vertices and face index loops (`arity=0`).
@@ -119,8 +122,9 @@ Smooth axis or free-form lattice deformation with bounded auto-subdivision (`ari
   `deform_degenerate`, `open_input`.
 
 ### 6. `morph`
-Smoothly interpolates two closed manifold solids via linear SDF blend at
-$t \in [0, 1]$ (`min_inputs=2`).
+Smoothly interpolates two or more closed manifold solids via linear SDF blend at
+$t \in [0, 1]$ (`min_inputs=2`; 3+ inputs are piecewise-linearly interpolated
+between adjacent keyframes).
 
 - **Required args:** none
 - **Optional args:**
