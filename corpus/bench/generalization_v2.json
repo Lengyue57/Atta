@@ -491,7 +491,7 @@
     ],
     "files": 15
    },
-   "freeze_commit": null,
+   "freeze_commit": "432086f",
    "rule": "case list frozen and committed before any template/op change; scored once at freeze (baseline); later runs must reproduce this sha or the runner refuses"
   }
  },
