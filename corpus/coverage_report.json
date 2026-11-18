@@ -1,13 +1,13 @@
 {
  "schema": "atta.coverage_report/v1",
- "generated": "2026-11-03T02:05:08Z",
+ "generated": "2026-11-18T14:18:18Z",
  "basis": "coverage is measured on SUBSTANTIVE records (accepted AND ≥1 parameter). reference_only accepted records are reported separately and never counted toward a target.",
  "totals": {
-  "records": 573,
-  "accepted": 561,
-  "substantive": 520,
+  "records": 620,
+  "accepted": 608,
+  "substantive": 567,
   "reference_only": 41,
-  "families": 185
+  "families": 232
  },
  "targets": {
   "v1_2": {
@@ -178,10 +178,10 @@
    "priority": "P0",
    "target_examples": 40,
    "target_families": 1,
-   "accepted": 46,
-   "substantive": 46,
+   "accepted": 56,
+   "substantive": 56,
    "reference_only": 0,
-   "families": 8,
+   "families": 18,
    "families_detail": {
     "pattern.array": 15,
     "pattern.mask_cutter": 14,
@@ -190,7 +190,17 @@
     "pattern.linear": 3,
     "pattern.honeycomb_panel": 2,
     "pattern.gridfinity_bin": 2,
-    "pattern.grid": 1
+    "pattern.grid": 1,
+    "pattern.wall.sparse_truss": 1,
+    "pattern.wall.corrugated": 1,
+    "pattern.wall.lightened_rib": 1,
+    "pattern.strut.narrowing": 1,
+    "pattern.tessellation.square_link": 1,
+    "pattern.tessellation.triangle_link": 1,
+    "pattern.perforated_plate.hex_grid": 1,
+    "pattern.tube_bundle.hex": 1,
+    "pattern.brick.interlocking_grid": 1,
+    "pattern.array.sdf3": 1
    },
    "gap_examples": 0,
    "gap_families": 0,
@@ -276,10 +286,10 @@
    "priority": "P1",
    "target_examples": 20,
    "target_families": 1,
-   "accepted": 15,
-   "substantive": 13,
+   "accepted": 31,
+   "substantive": 29,
    "reference_only": 2,
-   "families": 12,
+   "families": 28,
    "families_detail": {
     "lattice.porous_shell": 2,
     "lattice.gyroid_sheet": 1,
@@ -292,23 +302,39 @@
     "lattice.minkowski_sum": 1,
     "lattice.gyroid_thickness": 1,
     "lattice.array.repeat_field": 1,
-    "lattice.fractal.sponge": 1
+    "lattice.fractal.sponge": 1,
+    "lattice.strut.octet": 1,
+    "lattice.strut.kelvin": 1,
+    "lattice.strut.bcc": 1,
+    "lattice.strut.fcc": 1,
+    "lattice.strut.reentrant_auxetic": 1,
+    "lattice.strut.isotruss": 1,
+    "lattice.tpms.iwp": 1,
+    "lattice.tpms.lidinoid": 1,
+    "lattice.tpms.diamond": 1,
+    "lattice.tpms.split_p": 1,
+    "lattice.tpms.skeletal_iwp": 1,
+    "lattice.voronoi_foam": 1,
+    "lattice.conformal.radial": 1,
+    "lattice.graded.conformal_cylinder": 1,
+    "lattice.perforated_panel.hex": 1,
+    "lattice.sparse_cuboid": 1
    },
-   "gap_examples": 7,
+   "gap_examples": 0,
    "gap_families": 0,
-   "examples_ok": false,
+   "examples_ok": true,
    "families_ok": true,
-   "met": false
+   "met": true
   },
   {
    "category": "surface",
    "priority": "P0",
    "target_examples": 30,
    "target_families": 1,
-   "accepted": 95,
-   "substantive": 95,
+   "accepted": 105,
+   "substantive": 105,
    "reference_only": 0,
-   "families": 28,
+   "families": 38,
    "families_detail": {
     "surface.fillet_network": 33,
     "surface.curve": 12,
@@ -337,7 +363,17 @@
     "surface.extrude.volume_check": 1,
     "surface.cone.angle_specified": 1,
     "surface.extrude.bounded_field": 1,
-    "surface.cone.parametrisations": 1
+    "surface.cone.parametrisations": 1,
+    "surface.heightfield.planar": 1,
+    "surface.heightfield.cylindrical": 1,
+    "surface.nurbs.sheet": 1,
+    "surface.loft.skin": 1,
+    "surface.sweep.textured": 1,
+    "surface.bezier.patch_shell": 1,
+    "surface.prism.rounded_spline": 1,
+    "surface.wrap_faces.tire_tread": 1,
+    "surface.sweep.multisection_spline": 1,
+    "surface.loft.sdf_morph": 1
    },
    "gap_examples": 0,
    "gap_families": 0,
@@ -350,10 +386,10 @@
    "priority": "P1",
    "target_examples": 20,
    "target_families": 1,
-   "accepted": 22,
-   "substantive": 17,
+   "accepted": 33,
+   "substantive": 28,
    "reference_only": 5,
-   "families": 13,
+   "families": 24,
    "families_detail": {
     "tolerance.clearance_ladder": 5,
     "tolerance.fastener.nut": 1,
@@ -367,13 +403,24 @@
     "tolerance.fastener.washer": 1,
     "tolerance.fastener.plain_washer": 1,
     "tolerance.fastener.chamfered_washer": 1,
-    "tolerance.fastener.cheese_head_washer": 1
+    "tolerance.fastener.cheese_head_washer": 1,
+    "tolerance.snap_fit.pin": 1,
+    "tolerance.snap_fit.socket": 1,
+    "tolerance.snap_fit.rabbit_clip": 1,
+    "tolerance.hinge.living_hinge_mask": 1,
+    "tolerance.print_in_place.link_clearance": 1,
+    "tolerance.clearance_gauge.pin_plate": 1,
+    "tolerance.iso286.keyway": 1,
+    "tolerance.fastener.insert_hole": 1,
+    "tolerance.fastener.clearance_hole_fit": 1,
+    "tolerance.groove.retaining_ring": 1,
+    "tolerance.bushing.press_fit": 1
    },
-   "gap_examples": 3,
+   "gap_examples": 0,
    "gap_families": 0,
-   "examples_ok": false,
+   "examples_ok": true,
    "families_ok": true,
-   "met": false
+   "met": true
   },
   {
    "category": "material_finish",
@@ -418,15 +465,15 @@
   "product",
   "pattern",
   "assembly",
+  "lattice",
   "surface",
+  "tolerance",
   "material_finish"
  ],
  "short": [
   "architecture",
   "organic",
-  "text",
-  "lattice",
-  "tolerance"
+  "text"
  ],
  "short_detail": {
   "architecture": {
@@ -443,16 +490,6 @@
    "substantive": 9,
    "target": 20,
    "deficit": 11
-  },
-  "lattice": {
-   "substantive": 13,
-   "target": 20,
-   "deficit": 7
-  },
-  "tolerance": {
-   "substantive": 17,
-   "target": 20,
-   "deficit": 3
   }
  }
 }
