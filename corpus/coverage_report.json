@@ -1,13 +1,13 @@
 {
  "schema": "atta.coverage_report/v1",
- "generated": "2026-11-18T14:06:14Z",
+ "generated": "2026-11-18T14:18:18Z",
  "basis": "coverage is measured on SUBSTANTIVE records (accepted AND ≥1 parameter). reference_only accepted records are reported separately and never counted toward a target.",
  "totals": {
-  "records": 621,
-  "accepted": 609,
-  "substantive": 568,
+  "records": 620,
+  "accepted": 608,
+  "substantive": 567,
   "reference_only": 41,
-  "families": 233
+  "families": 232
  },
  "targets": {
   "v1_2": {
@@ -386,10 +386,10 @@
    "priority": "P1",
    "target_examples": 20,
    "target_families": 1,
-   "accepted": 34,
-   "substantive": 29,
+   "accepted": 33,
+   "substantive": 28,
    "reference_only": 5,
-   "families": 25,
+   "families": 24,
    "families_detail": {
     "tolerance.clearance_ladder": 5,
     "tolerance.fastener.nut": 1,
@@ -410,7 +410,6 @@
     "tolerance.hinge.living_hinge_mask": 1,
     "tolerance.print_in_place.link_clearance": 1,
     "tolerance.clearance_gauge.pin_plate": 1,
-    "tolerance.fit_class.diametral": 1,
     "tolerance.iso286.keyway": 1,
     "tolerance.fastener.insert_hole": 1,
     "tolerance.fastener.clearance_hole_fit": 1,

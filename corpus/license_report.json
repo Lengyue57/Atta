@@ -1,17 +1,17 @@
 {
  "schema": "atta.license_report/v1",
- "generated": "2026-11-18T14:06:14Z",
- "total_records": 621,
- "accepted": 609,
- "substantive": 568,
+ "generated": "2026-11-18T14:18:18Z",
+ "total_records": 620,
+ "accepted": 608,
+ "substantive": 567,
  "reference_only": 41,
  "by_tier": {
-  "A": 427,
+  "A": 426,
   "B": 182,
   "C": 12
  },
  "by_tier_accepted_only": {
-  "A": 427,
+  "A": 426,
   "B": 182
  },
  "by_spdx": {
@@ -19,7 +19,7 @@
   "Apache-2.0": 90,
   "CC-BY-SA-4.0": 63,
   "CC-BY-4.0": 63,
-  "MIT": 48,
+  "MIT": 47,
   "LGPL-2.1": 39,
   "CC0-1.0": 36,
   "MPL-2.0": 13,
@@ -34,7 +34,7 @@
   "AGPL-3.0": 1
  },
  "by_source_kind": {
-  "github": 464,
+  "github": 463,
   "printables": 139,
   "wikibooks": 11,
   "dataset_site": 3,
@@ -45,7 +45,7 @@
  },
  "tier_by_source_kind": {
   "github": {
-   "A": 401,
+   "A": 400,
    "B": 56,
    "C": 7
   },
