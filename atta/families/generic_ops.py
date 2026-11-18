@@ -84,10 +84,46 @@ def _int_bound(val, name: str, path: str, lo: int, hi: int) -> int:
     return k
 
 
-def _flag(val) -> bool:
+def _flag(val, name: str = "flag", path: str = "args") -> bool:
+    if isinstance(val, (bool, np.bool_)):
+        return bool(val)
     if isinstance(val, str):
-        return val.strip().lower() in ("1", "true", "yes", "on")
-    return bool(val)
+        s = val.strip().lower()
+        if s in ("1", "true", "yes", "on"):
+            return True
+        if s in ("0", "false", "no", "off"):
+            return False
+    raise AttaError("bad_arg", "%s must be a boolean (true or false), got %r" % (name, val),
+                    path=path, fix="pass true or false")
+
+
+def _has_bool_element(val) -> bool:
+    if isinstance(val, (bool, np.bool_)):
+        return True
+    if isinstance(val, np.ndarray):
+        if val.dtype == np.bool_:
+            return True
+        if val.dtype == object:
+            return any(_has_bool_element(x) for x in val.flat)
+        return False
+    if isinstance(val, (list, tuple)):
+        return any(_has_bool_element(x) for x in val)
+    return False
+
+
+def _float_array(val, name: str, path: str) -> np.ndarray:
+    if _has_bool_element(val):
+        raise AttaError("bad_arg", "%s must contain numbers, not booleans" % name,
+                        path=path, fix="replace true/false entries with numbers")
+    try:
+        arr = np.asarray(val, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise AttaError("bad_arg", "%s must be numeric" % name,
+                        path=path, fix="pass numeric coordinates") from exc
+    if not np.isfinite(arr).all():
+        raise AttaError("bad_arg", "%s contains NaN or Inf" % name,
+                        path=path, fix="remove non-finite values")
+    return arr
 
 
 def _axis(val, name: str, path: str) -> str:
@@ -117,6 +153,44 @@ def _check_input_mesh(mesh, label: str, path: str, *, require_closed: bool = Tru
     return topo
 
 
+def _non_manifold_vertex_count(faces: np.ndarray) -> int:
+    """Count vertices whose incident face star is not a single edge-connected fan."""
+    if len(faces) == 0:
+        return 0
+    vert_faces: dict[int, list[int]] = {}
+    for fi, row in enumerate(faces):
+        for vi in (int(row[0]), int(row[1]), int(row[2])):
+            vert_faces.setdefault(vi, []).append(fi)
+    bad = 0
+    for vi, flist in vert_faces.items():
+        if len(flist) <= 1:
+            continue
+        # Two incident faces at vi are fan-adjacent iff they share an edge incident to vi.
+        edge_to_faces: dict[int, list[int]] = {}
+        for fi in flist:
+            a, b, c = int(faces[fi, 0]), int(faces[fi, 1]), int(faces[fi, 2])
+            for u in (a, b, c):
+                if u != vi:
+                    edge_to_faces.setdefault(u, []).append(fi)
+        adj: dict[int, list[int]] = {fi: [] for fi in flist}
+        for nb_faces in edge_to_faces.values():
+            if len(nb_faces) == 2:
+                f0, f1 = nb_faces
+                adj[f0].append(f1)
+                adj[f1].append(f0)
+        seen = {flist[0]}
+        stack = [flist[0]]
+        while stack:
+            cur = stack.pop()
+            for nb in adj[cur]:
+                if nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+        if len(seen) != len(flist):
+            bad += 1
+    return bad
+
+
 def _assert_closed_manifold(mesh: Mesh, op: str, path: str) -> dict:
     topo = topology(mesh)
     if topo["empty"] or not topo["closed"] or topo["non_manifold_edges"] > 0:
@@ -126,6 +200,16 @@ def _assert_closed_manifold(mesh: Mesh, op: str, path: str) -> dict:
             % (op, topo["boundary_edges"], topo["non_manifold_edges"]),
             path=path,
             fix="check input geometry or increase resolution/subdivision",
+        )
+    nm_verts = _non_manifold_vertex_count(mesh.faces)
+    genus = topo.get("genus")
+    if nm_verts > 0 or not isinstance(genus, int) or genus < 0:
+        raise AttaError(
+            "%s_non_manifold" % op,
+            "%s produced non-manifold pinch vertices (%d) or invalid genus (%r)"
+            % (op, nm_verts, genus),
+            path=path,
+            fix="ensure shells do not pinch at shared vertices or self-intersect",
         )
     if topo["degenerate_faces"] > 0:
         raise AttaError(
@@ -318,7 +402,8 @@ def _minkowski_sdf_pair(a: Mesh, b: Mesh, *, resolution: int,
                         "operand A is thinner than the SDF grid spacing (%.3g mm)" % (spacing * 1e3),
                         path="resolution", fix="increase resolution or use exact mode on simpler meshes")
     ins_b = _inside_grid(nb, lo_b_p, spacing, b, axis=2)
-    if not ins_b.any():
+    subvoxel_b = not ins_b.any()
+    if subvoxel_b:
         # Sub-voxel operand B: evaluate at its centroid voxel so small tools still shift/dilate.
         ins_b[nb[0] // 2, nb[1] // 2, nb[2] // 2] = True
 
@@ -326,7 +411,11 @@ def _minkowski_sdf_pair(a: Mesh, b: Mesh, *, resolution: int,
     mask = conv > 0.5
     mp = np.pad(mask, 2, mode="constant", constant_values=False)
     org = lo_a_p + lo_b_p - 2.0 * spacing
-    phi = (distance_transform_edt(~mp) - distance_transform_edt(mp)) * spacing
+    # Unbiased EDT signed distance (-0.5*h on boundary inside, +0.5*h on boundary outside),
+    # shifted by -0.5*h when both A and B were grid-sampled to remove double-sampling shrinkage.
+    phi = np.where(mp, -(distance_transform_edt(mp) - 0.5), distance_transform_edt(~mp) - 0.5) * spacing
+    if not subvoxel_b:
+        phi = phi - 0.5 * spacing
     out = sdfkit.extract(phi, org, spacing, max_triangles=max_triangles)
     out = oriented(out)
     _assert_closed_manifold(out, "minkowski", "inputs")
@@ -344,28 +433,26 @@ def _minkowski_sdf_pair(a: Mesh, b: Mesh, *, resolution: int,
     return out
 
 
-def _minkowski_pair(a: Mesh, b: Mesh, *, method: str, resolution: int,
-                    max_vertices: int, max_triangles: int,
+def _minkowski_pair(a: Mesh, b: Mesh, *, method: str, exact: bool | None,
+                    resolution: int, max_vertices: int, max_triangles: int,
                     max_samples: int, max_face_product: int) -> Mesh:
     topo_a = _check_input_mesh(a, "a", "inputs[0]")
     topo_b = _check_input_mesh(b, "b", "inputs[1]")
 
-    if method != "sdf":
+    want_sdf = (exact is False) or (method == "sdf")
+    if not want_sdf:
         va = _convex_hull_verts_if_convex(a, topo_a)
         vb = _convex_hull_verts_if_convex(b, topo_b)
         if va is not None and vb is not None:
             pair_budget = min(max_vertices, _DEFAULT_MAX_PAIRWISE_POINTS)
             prod = len(va) * len(vb)
             if prod > pair_budget:
-                if method == "auto":
-                    return _minkowski_sdf_pair(a, b, resolution=resolution,
-                                               max_samples=max_samples,
-                                               max_triangles=max_triangles)
                 raise AttaError(
                     "budget_exceeded",
                     "pairwise vertex sum has %d points, exceeding budget %d" % (prod, pair_budget),
                     path="max_vertices",
-                    fix="simplify inputs, raise max_vertices, or use method='sdf'",
+                    fix="pass exact=false (or method='sdf') for bounded SDF approximation, "
+                        "or simplify inputs / raise max_vertices",
                     details={"pairwise_points": prod, "budget": pair_budget},
                 )
             pts = (va[:, None, :] + vb[None, :, :]).reshape(-1, 3)
@@ -377,53 +464,54 @@ def _minkowski_pair(a: Mesh, b: Mesh, *, method: str, resolution: int,
             return out
 
         face_prod = len(a.faces) * len(b.faces)
-        if face_prod <= max_face_product:
-            from ..boolean import _from_manifold, _to_manifold
-            try:
-                m = _to_manifold(a).minkowski_sum(_to_manifold(b))
-                out = _from_manifold(m)
-                if topology(out)["degenerate_faces"] > 0:
-                    tol = max(1e-9, float(out.bbox()["diag"]) * 1e-7)
-                    out = _from_manifold(m.simplify(tol))
-                out = oriented(out)
-                if len(out.faces) > max_triangles:
-                    raise AttaError(
-                        "budget_exceeded",
-                        "minkowski output has %d triangles, exceeding max_triangles=%d"
-                        % (len(out.faces), max_triangles),
-                        path="max_triangles",
-                        fix="simplify inputs or raise max_triangles",
-                    )
-                _assert_closed_manifold(out, "minkowski", "inputs")
-                out.meta["kind"] = "minkowski"
-                out.meta["op"] = "minkowski"
-                out.meta["exact"] = True
-                out.meta["minkowski"] = {"exact": True, "method": "manifold_minkowski_sum",
-                                         "face_product": int(face_prod)}
-                return out
-            except AttaError:
-                raise
-            except Exception as exc:
-                if method == "exact":
-                    raise AttaError("minkowski_failed",
-                                    "exact minkowski_sum failed: %s" % exc,
-                                    path="inputs", fix="use method='sdf' or simplify inputs") from exc
-
-        if method == "exact":
+        if face_prod > max_face_product:
             raise AttaError(
                 "budget_exceeded",
                 "non-convex minkowski face product %d exceeds max_face_product=%d"
                 % (face_prod, max_face_product),
                 path="max_face_product",
-                fix="use method='sdf' for bounded approximation, or simplify inputs",
+                fix="pass exact=false (or method='sdf') for bounded SDF approximation, "
+                    "or simplify inputs",
                 details={"face_product": face_prod, "max_face_product": int(max_face_product)},
             )
+
+        from ..boolean import _from_manifold, _to_manifold
+        try:
+            m = _to_manifold(a).minkowski_sum(_to_manifold(b))
+            out = _from_manifold(m)
+            if topology(out)["degenerate_faces"] > 0:
+                tol = max(1e-9, float(out.bbox()["diag"]) * 1e-7)
+                out = _from_manifold(m.simplify(tol))
+            out = oriented(out)
+            if len(out.faces) > max_triangles:
+                raise AttaError(
+                    "budget_exceeded",
+                    "minkowski output has %d triangles, exceeding max_triangles=%d"
+                    % (len(out.faces), max_triangles),
+                    path="max_triangles",
+                    fix="pass exact=false (or method='sdf') or simplify inputs",
+                )
+            _assert_closed_manifold(out, "minkowski", "inputs")
+            out.meta["kind"] = "minkowski"
+            out.meta["op"] = "minkowski"
+            out.meta["exact"] = True
+            out.meta["minkowski"] = {"exact": True, "method": "manifold_minkowski_sum",
+                                     "face_product": int(face_prod)}
+            return out
+        except AttaError:
+            raise
+        except Exception as exc:
+            raise AttaError("minkowski_failed",
+                            "exact minkowski_sum failed: %s" % exc,
+                            path="inputs",
+                            fix="pass exact=false (or method='sdf') or simplify inputs") from exc
 
     return _minkowski_sdf_pair(a, b, resolution=resolution,
                                max_samples=max_samples, max_triangles=max_triangles)
 
 
-def minkowski_sum(meshes, *, method: str = "auto", resolution: int = 48,
+def minkowski_sum(meshes, *, method: str = "auto", exact: bool | None = None,
+                  resolution: int = 48,
                   max_vertices: int = _DEFAULT_MAX_PAIRWISE_POINTS,
                   max_triangles: int = _DEFAULT_MAX_TRIS,
                   max_samples: int = _DEFAULT_MAX_SAMPLES,
@@ -437,7 +525,7 @@ def minkowski_sum(meshes, *, method: str = "auto", resolution: int = 48,
     methods_used = []
     for nxt in meshes[1:]:
         acc = _minkowski_pair(
-            acc, nxt, method=method, resolution=resolution,
+            acc, nxt, method=method, exact=exact, resolution=resolution,
             max_vertices=max_vertices, max_triangles=max_triangles,
             max_samples=max_samples, max_face_product=max_face_product,
         )
@@ -450,15 +538,15 @@ def minkowski_sum(meshes, *, method: str = "auto", resolution: int = 48,
     return acc
 
 
-def _minkowski_op(*, meshes, method="auto", resolution=48,
+def _minkowski_op(*, meshes, method="auto", exact=None, resolution=48,
                   max_vertices=_DEFAULT_MAX_PAIRWISE_POINTS,
                   max_triangles=_DEFAULT_MAX_TRIS,
                   max_samples=_DEFAULT_MAX_SAMPLES,
                   max_face_product=_DEFAULT_MAX_FACE_PRODUCT) -> Mesh:
     return minkowski_sum(
-        meshes, method=method, resolution=resolution, max_vertices=max_vertices,
-        max_triangles=max_triangles, max_samples=max_samples,
-        max_face_product=max_face_product,
+        meshes, method=method, exact=exact, resolution=resolution,
+        max_vertices=max_vertices, max_triangles=max_triangles,
+        max_samples=max_samples, max_face_product=max_face_product,
     )
 
 
@@ -467,8 +555,20 @@ def _minkowski_prepare(args, scale, path):
     if method not in ("auto", "exact", "sdf"):
         raise AttaError("bad_arg", "method must be auto, exact or sdf",
                         path=path + ".args.method", fix="use method='auto'")
+    exact = None
+    if "exact" in args:
+        exact = _flag(args["exact"], "exact", path + ".args.exact")
+        if exact is True and method == "sdf":
+            raise AttaError("bad_arg", "cannot combine exact=true with method='sdf'",
+                            path=path + ".args.exact",
+                            fix="omit method or pass exact=false")
+        if exact is False and method == "exact":
+            raise AttaError("bad_arg", "cannot combine exact=false with method='exact'",
+                            path=path + ".args.exact",
+                            fix="omit method or pass method='sdf'")
     return {
         "method": method,
+        "exact": exact,
         "resolution": _int_bound(args.get("resolution", 48), "resolution",
                                  path + ".args.resolution", 8, 128),
         "max_vertices": _int_bound(args.get("max_vertices", _DEFAULT_MAX_PAIRWISE_POINTS),
@@ -540,19 +640,10 @@ def _triangulate_polyhedron_faces(pts: np.ndarray, raw_faces, max_triangles: int
     return np.asarray(tris, dtype=np.int64)
 
 
-def _orient_components_outward(mesh: Mesh) -> Mesh:
-    """Orient every connected component consistently and outward."""
-    from ..repair import orient_consistently
-
-    out = orient_consistently(mesh)
-    verts = np.asarray(out.verts, dtype=np.float64)
-    faces = np.asarray(out.faces, dtype=np.int64).copy()
+def _edge_connected_components(faces: np.ndarray) -> np.ndarray:
+    """Return component root id per face, grouping by shared undirected edges."""
     n_f = len(faces)
-    if n_f == 0:
-        return out
-
-    # Union-find faces by shared vertices to orient each component independently.
-    parent = np.arange(len(verts), dtype=np.int64)
+    parent = np.arange(n_f, dtype=np.int64)
 
     def find(x):
         while parent[x] != x:
@@ -560,15 +651,49 @@ def _orient_components_outward(mesh: Mesh) -> Mesh:
             x = parent[x]
         return x
 
-    for a, b, c in faces:
-        ra, rb, rc = find(int(a)), find(int(b)), find(int(c))
-        if ra != rb:
-            parent[rb] = ra
-            rb = ra
-        if ra != rc:
-            parent[rc] = ra
+    edge_owner: dict[tuple[int, int], int] = {}
+    for fi, (a, b, c) in enumerate(faces):
+        for u, w in ((int(a), int(b)), (int(b), int(c)), (int(c), int(a))):
+            key = (u, w) if u < w else (w, u)
+            prev = edge_owner.get(key)
+            if prev is None:
+                edge_owner[key] = fi
+            else:
+                ra, rb = find(fi), find(prev)
+                if ra != rb:
+                    parent[rb] = ra
+    return np.array([find(fi) for fi in range(n_f)], dtype=np.int64)
 
-    roots = np.array([find(int(f[0])) for f in faces], dtype=np.int64)
+
+def _has_inward_component(mesh: Mesh) -> bool:
+    verts = np.asarray(mesh.verts, dtype=np.float64)
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    if len(faces) == 0:
+        return False
+    roots = _edge_connected_components(faces)
+    for root in np.unique(roots):
+        sub = faces[roots == root]
+        origin = verts[sub[0, 0]]
+        a = verts[sub[:, 0]] - origin
+        b = verts[sub[:, 1]] - origin
+        c = verts[sub[:, 2]] - origin
+        signed6 = float(np.sum(np.einsum("ij,ij->i", a, np.cross(b, c))))
+        if signed6 < 0.0:
+            return True
+    return False
+
+
+def _orient_components_outward(mesh: Mesh) -> Mesh:
+    """Orient every edge-connected shell consistently and outward."""
+    from ..repair import orient_consistently
+
+    out = orient_consistently(mesh)
+    verts = np.asarray(out.verts, dtype=np.float64)
+    faces = np.asarray(out.faces, dtype=np.int64).copy()
+    if len(faces) == 0:
+        return out
+
+    roots = _edge_connected_components(faces)
     for root in np.unique(roots):
         mask = roots == root
         sub = faces[mask]
@@ -586,13 +711,10 @@ def build_polyhedron(points, faces, *, convexity: int = 1, fix_winding: bool = T
                      weld_tol: float = 0.0, max_vertices: int = _DEFAULT_MAX_VERTS,
                      max_triangles: int = _DEFAULT_MAX_TRIS) -> Mesh:
     """Build and validate a closed oriented Mesh from OpenSCAD-style points + faces (metres)."""
-    pts = np.asarray(points, dtype=np.float64)
+    pts = _float_array(points, "points", "points")
     if pts.ndim != 2 or pts.shape[1] != 3 or len(pts) < 4:
         raise AttaError("bad_arg", "points must be (n>=4, 3)", path="points",
                         fix="pass at least 4 [x, y, z] coordinates")
-    if not np.isfinite(pts).all():
-        raise AttaError("bad_arg", "points contain NaN or Inf", path="points",
-                        fix="remove non-finite coordinates")
     if len(pts) > max_vertices:
         raise AttaError("budget_exceeded",
                         "polyhedron has %d points, exceeding max_vertices=%d"
@@ -614,15 +736,19 @@ def build_polyhedron(points, faces, *, convexity: int = 1, fix_winding: bool = T
         raise AttaError("polyhedron_open",
                         "polyhedron is not closed (%d boundary edge(s))" % topo["boundary_edges"],
                         path="faces", fix="close all faces so every edge has 2 incident faces")
-    if topo["non_manifold_edges"] > 0:
+    nm_verts = _non_manifold_vertex_count(mesh.faces)
+    if topo["non_manifold_edges"] > 0 or nm_verts > 0:
         raise AttaError("polyhedron_non_manifold",
-                        "polyhedron has %d non-manifold edge(s)" % topo["non_manifold_edges"],
-                        path="faces", fix="ensure every edge is shared by exactly 2 faces")
+                        "polyhedron is non-manifold (edges=%d, pinch_vertices=%d)"
+                        % (topo["non_manifold_edges"], nm_verts),
+                        path="faces",
+                        fix="ensure every edge has 2 faces and every vertex has 1 edge-connected fan")
 
     from ..mesh import _signed_volume_and_centroid
     signed_vol, _ = _signed_volume_and_centroid(mesh)
+    inward_shell = (topo["inconsistent_winding_edges"] == 0) and _has_inward_component(mesh)
     fixed_winding = False
-    if topo["inconsistent_winding_edges"] > 0 or signed_vol < 0.0:
+    if topo["inconsistent_winding_edges"] > 0 or signed_vol < 0.0 or inward_shell:
         if not fix_winding:
             code = ("polyhedron_bad_winding" if topo["inconsistent_winding_edges"] > 0
                     else "polyhedron_inside_out")
@@ -662,17 +788,10 @@ def _polyhedron_op(*, points, faces, convexity=1, fix_winding=True,
 
 
 def _polyhedron_prepare(args, scale, path):
-    try:
-        pts = np.asarray(args.get("points"), dtype=np.float64)
-    except (TypeError, ValueError) as exc:
-        raise AttaError("bad_arg", "points must be a 2D array of [x,y,z]",
-                        path=path + ".args.points", fix="pass [[x,y,z], ...]") from exc
+    pts = _float_array(args.get("points"), "points", path + ".args.points")
     if pts.ndim != 2 or pts.shape[1] != 3 or len(pts) < 4:
         raise AttaError("bad_arg", "points must be (n>=4, 3)",
                         path=path + ".args.points", fix="pass at least 4 [x,y,z] points in mm")
-    if not np.isfinite(pts).all():
-        raise AttaError("bad_arg", "points contain NaN or Inf",
-                        path=path + ".args.points", fix="remove non-finite coordinates")
     wt = _num(args.get("weld_tol", 0.0), "weld_tol", path + ".args.weld_tol")
     if wt < 0.0:
         raise AttaError("bad_arg", "weld_tol must be >= 0",
@@ -687,7 +806,8 @@ def _polyhedron_prepare(args, scale, path):
         "faces": raw_faces,
         "convexity": _int_bound(args.get("convexity", 1), "convexity",
                                 path + ".args.convexity", 1, 1000),
-        "fix_winding": _flag(args.get("fix_winding", True)),
+        "fix_winding": _flag(args.get("fix_winding", True), "fix_winding",
+                             path + ".args.fix_winding"),
         "weld_tol": wt * float(scale),
         "max_vertices": _int_bound(args.get("max_vertices", _DEFAULT_MAX_VERTS),
                                    "max_vertices", path + ".args.max_vertices", 4, _MAX_VERTS_CAP),
@@ -820,26 +940,18 @@ def _heightmap_op(*, heights, dx, dy, base=1e-3, center=True, invert=False,
 
 
 def _heightmap_prepare(args, scale, path):
-    try:
-        h = np.asarray(args.get("heights"), dtype=np.float64)
-    except (TypeError, ValueError) as exc:
-        raise AttaError("bad_arg", "heights must be a 2D numeric array",
-                        path=path + ".args.heights",
-                        fix="pass [[z00,z01],[z10,z11]] in mm") from exc
+    h = _float_array(args.get("heights"), "heights", path + ".args.heights")
     if h.ndim != 2 or h.shape[0] < 2 or h.shape[1] < 2:
         raise AttaError("bad_arg", "heights must have shape (rows>=2, cols>=2)",
                         path=path + ".args.heights",
                         fix="pass a 2D grid with at least 2 rows and 2 columns")
-    if not np.isfinite(h).all():
-        raise AttaError("bad_arg", "heights contain NaN or Inf",
-                        path=path + ".args.heights", fix="remove non-finite values")
     if "cell_size" in args and "size" in args and args["cell_size"] is not None and args["size"] is not None:
         raise AttaError("bad_arg", "specify either cell_size or size, not both",
                         path=path + ".args", fix="remove one of cell_size or size")
     rows, cols = h.shape
     if args.get("size") is not None:
-        sz = np.asarray(args["size"], dtype=np.float64).reshape(-1)
-        if sz.shape != (2,) or not np.isfinite(sz).all() or np.any(sz <= 0.0):
+        sz = _float_array(args["size"], "size", path + ".args.size").reshape(-1)
+        if sz.shape != (2,) or np.any(sz <= 0.0):
             raise AttaError("bad_arg", "size must be [Lx, Ly] with positive numbers",
                             path=path + ".args.size", fix="pass [Lx, Ly] in mm")
         dx = float(sz[0]) * float(scale) / float(cols - 1)
@@ -847,8 +959,8 @@ def _heightmap_prepare(args, scale, path):
     else:
         raw_cs = args.get("cell_size", 1.0)
         if isinstance(raw_cs, (list, tuple, np.ndarray)):
-            arr = np.asarray(raw_cs, dtype=np.float64).reshape(-1)
-            if arr.shape != (2,) or not np.isfinite(arr).all() or np.any(arr <= 0.0):
+            arr = _float_array(raw_cs, "cell_size", path + ".args.cell_size").reshape(-1)
+            if arr.shape != (2,) or np.any(arr <= 0.0):
                 raise AttaError("bad_arg", "cell_size must be > 0 or [dx, dy] > 0",
                                 path=path + ".args.cell_size", fix="pass positive spacing in mm")
             dx, dy = float(arr[0]) * float(scale), float(arr[1]) * float(scale)
@@ -864,8 +976,8 @@ def _heightmap_prepare(args, scale, path):
         "dx": dx,
         "dy": dy,
         "base": base,
-        "center": _flag(args.get("center", True)),
-        "invert": _flag(args.get("invert", False)),
+        "center": _flag(args.get("center", True), "center", path + ".args.center"),
+        "invert": _flag(args.get("invert", False), "invert", path + ".args.invert"),
         "max_vertices": _int_bound(args.get("max_vertices", _DEFAULT_MAX_VERTS),
                                    "max_vertices", path + ".args.max_vertices", 4, _MAX_VERTS_CAP),
         "max_triangles": _int_bound(args.get("max_triangles", _DEFAULT_MAX_TRIS),
@@ -961,6 +1073,20 @@ def _subdivide_to_max_edge(mesh: Mesh, max_edge: float, *,
                 new_faces.append((a, b, c))
         cur = Mesh(np.vstack([v, np.asarray(extra, dtype=np.float64)]),
                    np.asarray(new_faces, dtype=np.int64), dict(cur.meta))
+
+    # Fail closed if edges still exceed max_edge after max_rounds.
+    v = np.asarray(cur.verts, dtype=np.float64)
+    f = np.asarray(cur.faces, dtype=np.int64)
+    edges = _unique_undirected_edges(f)
+    if len(edges) > 0:
+        lengths = np.linalg.norm(v[edges[:, 0]] - v[edges[:, 1]], axis=1)
+        if bool((lengths > max_edge).any()):
+            raise AttaError(
+                "budget_exceeded",
+                "auto-subdivision did not reach max_edge within %d rounds" % max_rounds,
+                path="max_edge",
+                fix="increase max_edge or pass a finer input mesh",
+            )
     return cur
 
 
@@ -973,6 +1099,42 @@ def _bernstein_basis(n: int, t: np.ndarray) -> np.ndarray:
         coeff = float(math.comb(n, i))
         cols.append(coeff * (t ** i) * (one_m ** (n - i)))
     return np.column_stack(cols)
+
+
+def _bernstein_deriv(n: int, t: np.ndarray) -> np.ndarray:
+    """Evaluate d/dt B_{i, n}(t) for i=0..n -> shape (len(t), n+1)."""
+    if n <= 0:
+        return np.zeros((len(t), 1), dtype=np.float64)
+    bm = _bernstein_basis(n - 1, t)
+    cols = []
+    for i in range(n + 1):
+        left = bm[:, i - 1] if i > 0 else 0.0
+        right = bm[:, i] if i < n else 0.0
+        cols.append(float(n) * (left - right))
+    return np.column_stack(cols)
+
+
+def _ffd_min_jacobian_det(lo: np.ndarray, hi: np.ndarray,
+                          shape: tuple[int, int, int], offsets: np.ndarray) -> float:
+    """Minimum Jacobian determinant of the Bernstein FFD map sampled across the domain."""
+    nx, ny, nz = shape
+    span = np.maximum(hi - lo, 1e-12)
+    g = np.linspace(0.0, 1.0, 5)
+    uu, vv, ww = np.meshgrid(g, g, g, indexing="ij")
+    u, v, w = uu.ravel(), vv.ravel(), ww.ravel()
+    bx, by, bz = _bernstein_basis(nx - 1, u), _bernstein_basis(ny - 1, v), _bernstein_basis(nz - 1, w)
+    dbx, dby, dbz = _bernstein_deriv(nx - 1, u), _bernstein_deriv(ny - 1, v), _bernstein_deriv(nz - 1, w)
+    dx = np.einsum("ni,nj,nk,ijkd->nd", dbx, by, bz, offsets) / span[0]
+    dy = np.einsum("ni,nj,nk,ijkd->nd", bx, dby, bz, offsets) / span[1]
+    dz = np.einsum("ni,nj,nk,ijkd->nd", bx, by, dbz, offsets) / span[2]
+    J = np.zeros((len(u), 3, 3), dtype=np.float64)
+    J[:, :, 0] = dx
+    J[:, :, 1] = dy
+    J[:, :, 2] = dz
+    J[:, 0, 0] += 1.0
+    J[:, 1, 1] += 1.0
+    J[:, 2, 2] += 1.0
+    return float(np.linalg.det(J).min())
 
 
 def _apply_ffd_lattice(v: np.ndarray, lo: np.ndarray, hi: np.ndarray,
@@ -1010,11 +1172,27 @@ def deform_mesh(mesh: Mesh, *, mode: str = "twist", axis: str = "z",
         raise AttaError("deform_degenerate", "input mesh has zero bounding box",
                         path="inputs[0]", fix="pass a non-degenerate 3D solid")
 
+    lo0 = np.asarray(bb["min"], dtype=np.float64)
+    hi0 = np.asarray(bb["max"], dtype=np.float64)
+    span0 = float(hi0[ax_i] - lo0[ax_i])
+    if span0 <= 1e-12:
+        raise AttaError("deform_degenerate", "mesh has zero extent along %s axis" % ax,
+                        path="axis", fix="choose an axis along which the mesh has positive length")
+
     target_edge = (float(max_edge) if max_edge is not None
                    else max(diag / 28.0, 1e-6))
     if not math.isfinite(target_edge) or target_edge <= 0.0:
         raise AttaError("bad_arg", "max_edge must be positive", path="max_edge",
                         fix="pass max_edge > 0 mm")
+
+    if mode == "twist" and abs(float(angle_deg)) > 1e-9:
+        # Cap axial edge length to at most ~15 deg of twist per edge so coarse
+        # meshes cannot pinch into a self-intersecting bowtie.
+        n_slices = max(1, int(math.ceil(abs(float(angle_deg)) / 15.0)))
+        target_edge = min(target_edge, span0 / float(n_slices))
+    elif mode == "bend" and abs(float(angle_deg)) > 1e-9:
+        n_slices = max(1, int(math.ceil(abs(float(angle_deg)) / 15.0)))
+        target_edge = min(target_edge, span0 / float(n_slices))
 
     sub = _subdivide_to_max_edge(mesh, target_edge,
                                  max_vertices=max_vertices, max_triangles=max_triangles)
@@ -1023,9 +1201,6 @@ def deform_mesh(mesh: Mesh, *, mode: str = "twist", axis: str = "z",
     hi = v.max(axis=0)
     center = 0.5 * (lo + hi)
     span = float(hi[ax_i] - lo[ax_i])
-    if span <= 1e-12:
-        raise AttaError("deform_degenerate", "mesh has zero extent along %s axis" % ax,
-                        path="axis", fix="choose an axis along which the mesh has positive length")
 
     u_i, v_i = [i for i in range(3) if i != ax_i]
     if mode == "twist":
@@ -1044,6 +1219,12 @@ def deform_mesh(mesh: Mesh, *, mode: str = "twist", axis: str = "z",
         if b_i == ax_i:
             raise AttaError("bad_arg", "bend_axis (%s) must differ from axis (%s)" % (bax, ax),
                             path="bend_axis", fix="choose a perpendicular bend_axis")
+        if abs(float(angle_deg)) >= 360.0:
+            raise AttaError(
+                "deform_self_intersection",
+                "bend angle %.3g deg >= 360 deg wraps the solid into itself" % float(angle_deg),
+                path="angle_deg", fix="use |angle_deg| < 360 deg",
+            )
         ang = math.radians(float(angle_deg))
         if abs(ang) > 1e-12:
             R = span / ang
@@ -1057,6 +1238,16 @@ def deform_mesh(mesh: Mesh, *, mode: str = "twist", axis: str = "z",
                     path="angle_deg",
                     fix="reduce |angle_deg| so bend radius |R| > half the thickness along %s" % bax,
                 )
+            r_vals = np.abs(R - db)
+            if abs(ang) > math.pi:
+                r_min = float(r_vals.min())
+                end_gap = 2.0 * r_min * math.sin(math.pi - 0.5 * abs(ang))
+                if end_gap <= 1e-3 * span:
+                    raise AttaError(
+                        "deform_self_intersection",
+                        "bend angle %.3g deg causes the two ends to collide" % float(angle_deg),
+                        path="angle_deg", fix="reduce |angle_deg| so the bent ends clear each other",
+                    )
             theta = s / R
             r = R - db
             v[:, ax_i] = center[ax_i] + r * np.sin(theta)
@@ -1076,12 +1267,27 @@ def deform_mesh(mesh: Mesh, *, mode: str = "twist", axis: str = "z",
                             path="lattice", fix='pass {"shape":[2,2,2],"offsets":[[...],...]}')
         shape = lattice["shape"]
         offsets = lattice["offsets"]
+        if _ffd_min_jacobian_det(lo, hi, shape, offsets) <= 1e-6:
+            raise AttaError(
+                "deform_self_intersection",
+                "lattice offsets invert or fold the deformation domain (Jacobian <= 0)",
+                path="lattice", fix="reduce lattice offsets so control points do not cross",
+            )
         v = _apply_ffd_lattice(v, lo, hi, shape, offsets)
 
     if not np.isfinite(v).all():
         raise AttaError("deform_failed", "deformed vertices became non-finite",
                         path="mode", fix="reduce deformation magnitude")
-    out = oriented(Mesh(v, sub.faces.copy(), dict(sub.meta)))
+    deformed = Mesh(v, sub.faces.copy(), dict(sub.meta))
+    from ..mesh import _signed_volume_and_centroid
+    signed_vol, _ = _signed_volume_and_centroid(deformed)
+    if signed_vol <= _MIN_VOL_M3:
+        raise AttaError(
+            "deform_self_intersection",
+            "deformation inverted the solid (signed volume <= 0)",
+            path="mode", fix="reduce deformation magnitude",
+        )
+    out = oriented(deformed)
     _assert_closed_manifold(out, "deform", "mode")
     out.meta.update({
         "kind": "deform", "op": "deform",
@@ -1133,12 +1339,8 @@ def _deform_prepare(args, scale, path):
         if "offsets" not in raw_lat:
             raise AttaError("bad_arg", "lattice.offsets is required",
                             path=path + ".args.lattice", fix="add offsets in mm")
-        try:
-            offs = np.asarray(raw_lat["offsets"], dtype=np.float64)
-        except (TypeError, ValueError) as exc:
-            raise AttaError("bad_arg", "lattice.offsets must be numeric",
-                            path=path + ".args.lattice.offsets",
-                            fix="pass (nx*ny*nz, 3) or (nx, ny, nz, 3) offsets in mm") from exc
+        offs = _float_array(raw_lat["offsets"], "lattice.offsets",
+                            path + ".args.lattice.offsets")
         if offs.ndim == 2 and offs.shape == (math.prod(shape), 3):
             offs = offs.reshape(*shape, 3)
         elif offs.shape != (*shape, 3):
@@ -1146,9 +1348,6 @@ def _deform_prepare(args, scale, path):
                             "lattice.offsets shape %r does not match %r" % (offs.shape, (*shape, 3)),
                             path=path + ".args.lattice.offsets",
                             fix="pass %d [dx,dy,dz] offsets in mm" % math.prod(shape))
-        if not np.isfinite(offs).all():
-            raise AttaError("bad_arg", "lattice.offsets contain NaN or Inf",
-                            path=path + ".args.lattice.offsets", fix="remove non-finite offsets")
         lat_out = {"shape": shape, "offsets": offs * float(scale)}
     return {
         "mode": mode, "axis": ax, "bend_axis": bax, "angle_deg": angle_deg,
@@ -1176,6 +1375,7 @@ def _signed_distance_grid(shape, org: np.ndarray, spacing: float, mesh: Mesh) ->
     pts = np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()])
 
     cen = tri.mean(axis=1)
+    radii = np.linalg.norm(tri - cen[:, None, :], axis=2).max(axis=1)
     k = int(min(24, len(tri)))
     _, idx = cKDTree(cen).query(pts, k=k, workers=1)
     if k == 1:
@@ -1186,6 +1386,27 @@ def _signed_distance_grid(shape, org: np.ndarray, spacing: float, mesh: Mesh) ->
         ii = idx[s:s + 2048]
         dd = _point_tri_dist(p[:, None, :], tri[ii, 0], tri[ii, 1], tri[ii, 2])
         dist[s:s + 2048] = dd.min(axis=1)
+
+    # Exact triangle-inequality pass so large triangles whose centroids lie far
+    # from clusters of small triangles can never be skipped.
+    if len(tri) > k:
+        for s in range(0, len(pts), 2048):
+            p = pts[s:s + 2048]
+            d_best = dist[s:s + 2048]
+            for j0 in range(0, len(tri), 256):
+                j1 = min(len(tri), j0 + 256)
+                c_b = cen[j0:j1]
+                r_b = radii[j0:j1]
+                # ||p - c_j|| - r_j is a lower bound on distance from p to triangle j.
+                diff = p[:, None, :] - c_b[None, :, :]
+                lb = np.sqrt(np.einsum("ijk,ijk->ij", diff, diff)) - r_b[None, :]
+                cand = lb < (d_best[:, None] - 1e-12)
+                if not cand.any():
+                    continue
+                pi, ji = np.nonzero(cand)
+                tj = j0 + ji
+                dd = _point_tri_dist(p[pi], tri[tj, 0], tri[tj, 1], tri[tj, 2])
+                np.minimum.at(d_best, pi, dd)
 
     inside = _inside_grid(shape, org, spacing, mesh, axis=2).ravel()
     return np.where(inside, -dist, dist).reshape(shape)
@@ -1209,15 +1430,21 @@ def morph_meshes(a: Mesh, b: Mesh, *, t: float = 0.5, resolution: int = 40,
         cb = np.asarray(b.bbox()["center"], dtype=np.float64)
         b_work = b.transform(translate=tuple(ca - cb))
 
-    if tt == 0.0:
-        out = a.copy()
+    if tt == 0.0 or tt == 1.0:
+        src = a if tt == 0.0 else b_work
+        if len(src.faces) > max_triangles:
+            raise AttaError(
+                "budget_exceeded",
+                "morph endpoint has %d triangles, exceeding max_triangles=%d"
+                % (len(src.faces), max_triangles),
+                path="max_triangles",
+                fix="simplify input or raise max_triangles up to %d" % _MAX_TRIS_CAP,
+            )
+        out = src.copy()
         out.meta.update({"kind": "morph", "op": "morph",
-                         "morph": {"t": 0.0, "method": "endpoint_a", "exact": True}})
-        return out
-    if tt == 1.0:
-        out = b_work.copy()
-        out.meta.update({"kind": "morph", "op": "morph",
-                         "morph": {"t": 1.0, "method": "endpoint_b", "exact": True}})
+                         "morph": {"t": float(tt),
+                                   "method": "endpoint_a" if tt == 0.0 else "endpoint_b",
+                                   "exact": True}})
         return out
 
     from .. import sdf, sdfkit
@@ -1263,14 +1490,47 @@ def morph_meshes(a: Mesh, b: Mesh, *, t: float = 0.5, resolution: int = 40,
 
 def _morph_op(*, meshes, t=0.5, resolution=40, align_centers=False,
               max_samples=_DEFAULT_MAX_SAMPLES, max_triangles=_DEFAULT_MAX_TRIS) -> Mesh:
-    if len(meshes) != 2:
-        raise AttaError("bad_arg", "morph requires exactly 2 input meshes, got %d" % len(meshes),
+    if len(meshes) < 2:
+        raise AttaError("bad_arg", "morph requires at least 2 input meshes, got %d" % len(meshes),
                         path="inputs", fix='pass inputs=["<a>", "<b>"]')
-    return morph_meshes(
-        meshes[0], meshes[1], t=t, resolution=resolution,
-        align_centers=align_centers, max_samples=max_samples,
-        max_triangles=max_triangles,
-    )
+    tt = _num(t, "t", "t")
+    if not (0.0 <= tt <= 1.0):
+        raise AttaError("bad_arg", "morph t must be in [0, 1], got %.4g" % tt,
+                        path="t", fix="pass t between 0.0 and 1.0")
+    if len(meshes) == 2:
+        return morph_meshes(
+            meshes[0], meshes[1], t=tt, resolution=resolution,
+            align_centers=align_centers, max_samples=max_samples,
+            max_triangles=max_triangles,
+        )
+    for i, m in enumerate(meshes):
+        _check_input_mesh(m, "inputs[%d]" % i, "inputs[%d]" % i)
+    k = len(meshes)
+    u = tt * float(k - 1)
+    idx = min(int(math.floor(u)), k - 2)
+    local_t = u - float(idx)
+    a_m, b_m = meshes[idx], meshes[idx + 1]
+    if align_centers and idx > 0:
+        c0 = np.asarray(meshes[0].bbox()["center"], dtype=np.float64)
+        ca = np.asarray(a_m.bbox()["center"], dtype=np.float64)
+        cb = np.asarray(b_m.bbox()["center"], dtype=np.float64)
+        a_m = a_m.transform(translate=tuple(c0 - ca))
+        b_m = b_m.transform(translate=tuple(c0 - cb))
+        out = morph_meshes(
+            a_m, b_m, t=local_t, resolution=resolution,
+            align_centers=False, max_samples=max_samples,
+            max_triangles=max_triangles,
+        )
+    else:
+        out = morph_meshes(
+            a_m, b_m, t=local_t, resolution=resolution,
+            align_centers=align_centers, max_samples=max_samples,
+            max_triangles=max_triangles,
+        )
+    out.meta["morph"]["keyframe_count"] = k
+    out.meta["morph"]["segment"] = [idx, idx + 1]
+    out.meta["morph"]["global_t"] = float(tt)
+    return out
 
 
 def _morph_prepare(args, scale, path):
@@ -1282,7 +1542,8 @@ def _morph_prepare(args, scale, path):
         "t": t,
         "resolution": _int_bound(args.get("resolution", 40), "resolution",
                                  path + ".args.resolution", 8, 128),
-        "align_centers": _flag(args.get("align_centers", False)),
+        "align_centers": _flag(args.get("align_centers", False),
+                               "align_centers", path + ".args.align_centers"),
         "max_samples": _int_bound(args.get("max_samples", _DEFAULT_MAX_SAMPLES),
                                   "max_samples", path + ".args.max_samples", 343, _MAX_SAMPLES_CAP),
         "max_triangles": _int_bound(args.get("max_triangles", _DEFAULT_MAX_TRIS),
@@ -1378,10 +1639,10 @@ def _projection_extrude_prepare(args, scale, path):
     c_off = _num(args.get("cut_offset", 0.0), "cut_offset", path + ".args.cut_offset") * float(scale)
     return {
         "thickness": t,
-        "cut": _flag(args.get("cut", False)),
+        "cut": _flag(args.get("cut", False), "cut", path + ".args.cut"),
         "cut_offset": c_off,
         "axis": _axis(args.get("axis", "z"), "axis", path + ".args.axis"),
-        "center": _flag(args.get("center", False)),
+        "center": _flag(args.get("center", False), "center", path + ".args.center"),
         "max_triangles": _int_bound(args.get("max_triangles", _DEFAULT_MAX_TRIS),
                                     "max_triangles", path + ".args.max_triangles", 4, _MAX_TRIS_CAP),
         "max_input_triangles": _int_bound(args.get("max_input_triangles", _DEFAULT_MAX_TRIS),
@@ -1406,15 +1667,16 @@ def register():
     _minkowski_op.prepare = _minkowski_prepare
     register_op("minkowski", {
         "required": (),
-        "optional": ("method", "resolution", "max_vertices", "max_triangles",
+        "optional": ("exact", "method", "resolution", "max_vertices", "max_triangles",
                      "max_samples", "max_face_product"),
         "min_inputs": 2,
         "doc": "Minkowski sum A (+) B: exact pairwise-vertex hull for convex+convex, "
                "exact manifold sum for small non-convex meshes, or bounded SDF convolution "
-               "(meta.exact=false) when method='sdf' or face product exceeds budget.",
-        "args": {"method": "enum:auto|exact|sdf", "resolution": ("int", 8),
-                 "max_vertices": ("int", 4), "max_triangles": ("int", 4),
-                 "max_samples": ("int", 343), "max_face_product": ("int", 1)},
+               "(meta.exact=false) when explicitly requested with exact=false or method='sdf'.",
+        "args": {"exact": "bool", "method": "enum:auto|exact|sdf",
+                 "resolution": ("int", 8), "max_vertices": ("int", 4),
+                 "max_triangles": ("int", 4), "max_samples": ("int", 343),
+                 "max_face_product": ("int", 1)},
     }, _minkowski_op)
 
     _polyhedron_op.prepare = _polyhedron_prepare

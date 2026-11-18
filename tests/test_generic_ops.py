@@ -149,11 +149,41 @@ def test_minkowski_nonconvex_exact_and_sdf_approx():
     assert exact_m.meta["exact"] is True
     assert abs(exact_m.volume() * 1e9 - 48000.0) / 48000.0 < 1e-4
 
-    sdf_m = _eval(l_feats + [{"id": "m", "op": "minkowski", "args": {"method": "sdf", "resolution": 40}, "inputs": ["L", "t"]}])
+    # Explicit exact=False SDF approximation on L-bracket (+) box and box (+) box.
+    sdf_m = _eval(l_feats + [{"id": "m", "op": "minkowski", "args": {"exact": False, "resolution": 40}, "inputs": ["L", "t"]}])
     _assert_closed_manifold(sdf_m, expected_genus=0)
     assert sdf_m.meta["exact"] is False
     assert sdf_m.meta["minkowski"]["exact"] is False
-    assert abs(sdf_m.volume() * 1e9 - 48000.0) / 48000.0 < 0.15
+    assert abs(sdf_m.volume() * 1e9 - 48000.0) / 48000.0 < 0.08
+
+    # Unbiased SDF EDT on box(20) + box(10) at resolution=60 stays within 1% of 27000 mm3.
+    sdf_bb = _eval([
+        {"id": "a", "op": "box", "args": {"size": [20, 20, 20]}},
+        {"id": "b", "op": "box", "args": {"size": [10, 10, 10]}},
+        {"id": "m", "op": "minkowski", "args": {"exact": False, "resolution": 60}, "inputs": ["a", "b"]},
+    ])
+    _assert_closed_manifold(sdf_bb, expected_genus=0)
+    assert sdf_bb.meta["exact"] is False
+    assert abs(sdf_bb.volume() * 1e9 - 27000.0) / 27000.0 < 0.01
+
+    # Default args={} on high-face-product non-convex inputs must NOT silently degrade to SDF.
+    with pytest.raises(AttaError) as exc_no_silent:
+        _eval([
+            {"id": "t1", "op": "torus", "args": {"major_radius": 20, "minor_radius": 5, "seg_major": 24, "seg_minor": 12}},
+            {"id": "t2", "op": "torus", "args": {"major_radius": 10, "minor_radius": 2, "seg_major": 16, "seg_minor": 8}},
+            {"id": "m", "op": "minkowski", "args": {}, "inputs": ["t1", "t2"]},
+        ])
+    assert exc_no_silent.value.code == "budget_exceeded"
+    assert "exact=false" in exc_no_silent.value.fix
+
+    # Contradictory exact/method flags fail closed.
+    with pytest.raises(AttaError) as exc_conf:
+        _eval([
+            {"id": "a", "op": "box", "args": {"size": [10, 10, 10]}},
+            {"id": "b", "op": "box", "args": {"size": [5, 5, 5]}},
+            {"id": "m", "op": "minkowski", "args": {"exact": True, "method": "sdf"}, "inputs": ["a", "b"]},
+        ])
+    assert exc_conf.value.code == "bad_arg"
 
 
 def test_minkowski_budgets_and_bad_args():
@@ -241,6 +271,38 @@ def test_polyhedron_errors_and_budgets():
         }}])
     assert exc_b.value.code == "budget_exceeded"
 
+    # Non-manifold pinch vertex (two tetrahedra sharing vertex 0) must fail closed.
+    pinch_pts = [
+        [0, 0, 0],
+        [10, 0, 0], [0, 10, 0], [0, 0, 10],
+        [-20, 0, 0], [0, -20, 0], [0, 0, -20],
+    ]
+    pinch_faces = [
+        [0, 1, 2], [0, 2, 3], [0, 3, 1], [1, 3, 2],  # Tet A (inward)
+        [0, 4, 5], [0, 5, 6], [0, 6, 4], [4, 6, 5],  # Tet B (outward)
+    ]
+    with pytest.raises(AttaError) as exc_pinch:
+        _eval([{"id": "p", "op": "polyhedron", "args": {
+            "points": pinch_pts, "faces": pinch_faces,
+        }}])
+    assert exc_pinch.value.code == "polyhedron_non_manifold"
+
+    # Disjoint edge-connected shells with opposite initial windings orient both outward.
+    disjoint_pts = [
+        [0, 0, 0], [10, 0, 0], [0, 10, 0], [0, 0, 10],
+        [30, 0, 0], [50, 0, 0], [30, 20, 0], [30, 0, 20],
+    ]
+    disjoint_faces = [
+        [0, 1, 2], [0, 2, 3], [0, 3, 1], [1, 3, 2],  # Tet A inward
+        [4, 6, 5], [4, 5, 7], [4, 7, 6], [5, 6, 7],  # Tet B outward
+    ]
+    m_disj = _eval([{"id": "p", "op": "polyhedron", "args": {
+        "points": disjoint_pts, "faces": disjoint_faces,
+    }}])
+    _assert_closed_manifold(m_disj, expected_genus=0, expected_components=2)
+    expected_vol = (10.0**3 + 20.0**3) / 6.0
+    assert abs(m_disj.volume() * 1e9 - expected_vol) < 1e-4
+
 
 # ---------------------------------------------------------------- heightmap
 
@@ -306,6 +368,16 @@ def test_deform_twist_preserves_volume_and_all_modes():
     assert len(mt1.faces) > 12
     assert abs(mt1.volume() * 1e9 - 24000.0) / 24000.0 < 0.005
 
+    # Coarse max_edge with large twist angle must still subdivide axially (no hourglass pinch).
+    mt_coarse = _eval([
+        {"id": "b", "op": "box", "args": {"size": [20, 20, 60]}},
+        {"id": "d", "op": "deform", "args": {
+            "mode": "twist", "axis": "z", "angle_deg": 180.0, "max_edge": 100.0,
+        }, "inputs": ["b"]},
+    ])
+    _assert_closed_manifold(mt_coarse, expected_genus=0)
+    assert abs(mt_coarse.volume() * 1e9 - 24000.0) / 24000.0 < 0.02
+
     # 2. Bend: symmetric bar bent 60 deg preserves volume closely.
     mb = _eval([
         {"id": "b", "op": "box", "args": {"size": [10, 10, 60]}},
@@ -316,15 +388,16 @@ def test_deform_twist_preserves_volume_and_all_modes():
     _assert_closed_manifold(mb, expected_genus=0)
     assert abs(mb.volume() * 1e9 - 6000.0) / 6000.0 < 0.005
 
-    # Extreme bend folding through itself fails closed.
-    with pytest.raises(AttaError) as exc_fold:
-        _eval([
-            {"id": "b", "op": "box", "args": {"size": [30, 10, 40]}},
-            {"id": "d", "op": "deform", "args": {
-                "mode": "bend", "axis": "z", "bend_axis": "x", "angle_deg": 360.0,
-            }, "inputs": ["b"]},
-        ])
-    assert exc_fold.value.code == "deform_self_intersection"
+    # Extreme bend folding through itself or wrapping >= 360 deg fails closed.
+    for bad_ang in (360.0, 400.0):
+        with pytest.raises(AttaError) as exc_fold:
+            _eval([
+                {"id": "b", "op": "box", "args": {"size": [2, 2, 100]}},
+                {"id": "d", "op": "deform", "args": {
+                    "mode": "bend", "axis": "z", "bend_axis": "x", "angle_deg": bad_ang,
+                }, "inputs": ["b"]},
+            ])
+        assert exc_fold.value.code == "deform_self_intersection"
 
     # 3. Taper: frustum volume formula = H/3 * (A0 + sqrt(A0*A1) + A1).
     mp = _eval([
@@ -351,6 +424,20 @@ def test_deform_twist_preserves_volume_and_all_modes():
     _assert_closed_manifold(ml, expected_genus=0)
     assert abs(ml.bbox()["size"][2] * 1e3 - 30.0) < 1e-6
     assert abs(ml.volume() * 1e9 - 12000.0) / 12000.0 < 1e-4
+
+    # Inverted lattice FFD (pushing +Z corners past -Z) must fail closed, never silently flip.
+    inv_offsets = [[0, 0, 0]] * 8
+    for idx in (1, 3, 5, 7):
+        inv_offsets[idx] = [0, 0, -40.0]
+    with pytest.raises(AttaError) as exc_inv:
+        _eval([
+            {"id": "b", "op": "box", "args": {"size": [20, 20, 20]}},
+            {"id": "d", "op": "deform", "args": {
+                "mode": "lattice", "lattice": {"shape": [2, 2, 2], "offsets": inv_offsets},
+                "max_edge": 10.0,
+            }, "inputs": ["b"]},
+        ])
+    assert exc_inv.value.code == "deform_self_intersection"
 
     # 5. Budget check.
     with pytest.raises(AttaError) as exc_b:
@@ -379,9 +466,36 @@ def test_morph_spheres_analytic_and_errors():
     analytic = (4.0 / 3.0) * math.pi * 15.0**3
     assert abs(mm1.volume() * 1e9 - analytic) / analytic < 0.03
 
-    # Endpoints t=0 and t=1 match inputs exactly.
+    # Endpoints t=0 and t=1 match inputs and enforce max_triangles budget.
     m0 = _eval([feats[0], feats[1], {"id": "m", "op": "morph", "args": {"t": 0.0}, "inputs": ["a", "b"]}])
     assert abs(m0.volume() * 1e9 - _eval([feats[0]]).volume() * 1e9) < 1e-6
+    with pytest.raises(AttaError) as exc_ep_bud:
+        _eval([feats[0], feats[1], {"id": "m", "op": "morph", "args": {"t": 0.0, "max_triangles": 10}, "inputs": ["a", "b"]}])
+    assert exc_ep_bud.value.code == "budget_exceeded"
+
+    # Mixed-scale SDF check: large box + tiny sphere must not miss large box faces.
+    from atta.families.generic_ops import _signed_distance_grid
+    mixed = _eval([
+        {"id": "plate", "op": "box", "args": {"size": [100, 100, 8]}},
+        {"id": "dot", "op": "sphere", "args": {"radius": 1, "center": [0, 0, 4], "segments": 16, "rings": 8}},
+        {"id": "u", "op": "union", "args": {}, "inputs": ["plate", "dot"]},
+    ])
+    phi_m = _signed_distance_grid((1, 1, 3), np.array([0.0, 0.0, -0.004]), 0.001, mixed)
+    assert np.allclose(phi_m[0, 0, :] * 1e3, [0.0, -1.0, -2.0], atol=1e-6), phi_m
+
+    # 3-input morph keyframe interpolation.
+    kf_inputs = [
+        {"id": "a", "op": "sphere", "args": {"radius": 8, "segments": 32, "rings": 16}},
+        {"id": "b", "op": "sphere", "args": {"radius": 12, "segments": 32, "rings": 16}},
+        {"id": "c", "op": "sphere", "args": {"radius": 16, "segments": 32, "rings": 16}},
+    ]
+    m3_mid = _eval(kf_inputs + [{"id": "m", "op": "morph", "args": {"t": 0.5, "resolution": 24}, "inputs": ["a", "b", "c"]}])
+    _assert_closed_manifold(m3_mid, expected_genus=0)
+    assert abs(m3_mid.volume() - _eval([kf_inputs[1]]).volume()) < 1e-12
+    m3_q = _eval(kf_inputs + [{"id": "m", "op": "morph", "args": {"t": 0.75, "resolution": 32}, "inputs": ["a", "b", "c"]}])
+    _assert_closed_manifold(m3_q, expected_genus=0)
+    analytic_14 = (4.0 / 3.0) * math.pi * 14.0**3
+    assert abs(m3_q.volume() * 1e9 - analytic_14) / analytic_14 < 0.03
 
     # Far-apart disjoint shapes without align_centers fail with morph_empty; with align_centers succeed.
     far_a = {"id": "a", "op": "box", "args": {"size": [10, 10, 10], "center": [-50, 0, 0]}}
@@ -484,3 +598,48 @@ def test_spec_validation_and_bad_args():
         _eval([
             {"id": "hm", "op": "heightmap", "args": {"heights": [[1.0, float("nan")], [1.0, 2.0]]}},
         ])
+
+    # Booleans inside float arrays and invalid flag values must fail closed.
+    with pytest.raises(AttaError) as exc_bool_pts:
+        _eval([{"id": "p", "op": "polyhedron", "args": {
+            "points": [[True, 0, 0], [10, 0, 0], [0, 10, 0], [0, 0, 10]],
+            "faces": [[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]],
+        }}])
+    assert exc_bool_pts.value.code == "bad_arg"
+
+    with pytest.raises(AttaError) as exc_bool_hm:
+        _eval([{"id": "hm", "op": "heightmap", "args": {
+            "heights": [[True, 2.0], [3.0, 4.0]], "cell_size": 5.0,
+        }}])
+    assert exc_bool_hm.value.code == "bad_arg"
+
+    with pytest.raises(AttaError) as exc_bool_sz:
+        _eval([{"id": "hm", "op": "heightmap", "args": {
+            "heights": [[2.0, 2.0], [3.0, 4.0]], "size": [True, 10.0],
+        }}])
+    assert exc_bool_sz.value.code == "bad_arg"
+
+    with pytest.raises(AttaError) as exc_bool_off:
+        _eval([
+            {"id": "b", "op": "box", "args": {"size": [10, 10, 10]}},
+            {"id": "d", "op": "deform", "args": {
+                "mode": "lattice",
+                "lattice": {"shape": [2, 2, 2], "offsets": [[False, 0, 0]] + [[0, 0, 0]] * 7},
+            }, "inputs": ["b"]},
+        ])
+    assert exc_bool_off.value.code == "bad_arg"
+
+    with pytest.raises(AttaError) as exc_bad_flag:
+        _eval([{"id": "p", "op": "polyhedron", "args": {
+            "points": [[0, 0, 0], [10, 0, 0], [0, 10, 0], [0, 0, 10]],
+            "faces": [[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]],
+            "fix_winding": "banana",
+        }}])
+    assert exc_bad_flag.value.code == "bad_arg"
+
+    with pytest.raises(AttaError) as exc_bad_cut:
+        _eval([
+            {"id": "b", "op": "box", "args": {"size": [10, 10, 10]}},
+            {"id": "p", "op": "projection_extrude", "args": {"thickness": 5, "cut": [1, 2]}, "inputs": ["b"]},
+        ])
+    assert exc_bad_cut.value.code == "bad_arg"
