@@ -45,6 +45,7 @@ from . import mesh as M
 from . import probe
 
 __all__ = [
+    "RULE_NAMES",
     "design_report",
     "silhouette_readability",
     "negative_space",
@@ -54,10 +55,23 @@ __all__ = [
     "printability",
     "moldability",
     "machinability",
+    "stability",
     "METHOD",
 ]
 
 METHOD = "atta.design/v1"
+
+RULE_NAMES = (
+    "readability",
+    "negative_space",
+    "form_hierarchy",
+    "proportion",
+    "symmetry",
+    "printability",
+    "moldability",
+    "machinability",
+    "stability",
+)
 
 
 def _check(cid, ok, value, advice, *, detail=None):
@@ -469,12 +483,166 @@ def machinability(mesh, *, tool_radius_mm=3.0):
          % (min(100.0, frac * 100.0), float(tool_radius_mm))))
 
 
+# ---------------------------------------------------------------- stability
+
+def _convex_hull_2d(pts: np.ndarray) -> np.ndarray:
+    """Return CCW 2D convex hull vertices (M, 2) via Andrew's monotone chain."""
+    p = np.asarray(pts, dtype=np.float64)
+    if len(p) == 0:
+        return np.zeros((0, 2), dtype=np.float64)
+    order = np.lexsort((p[:, 1], p[:, 0]))
+    p = p[order]
+    keep = np.ones(len(p), dtype=bool)
+    keep[1:] = np.any(np.diff(p, axis=0) != 0.0, axis=1)
+    p = p[keep]
+    if len(p) <= 2:
+        return p
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower = []
+    for pt in p:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], pt) <= 0.0:
+            lower.pop()
+        lower.append(pt)
+    upper = []
+    for pt in reversed(p):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], pt) <= 0.0:
+            upper.pop()
+        upper.append(pt)
+    return np.array(lower[:-1] + upper[:-1], dtype=np.float64)
+
+
+def _polygon_area_2d(poly: np.ndarray) -> float:
+    if len(poly) < 3:
+        return 0.0
+    x, y = poly[:, 0], poly[:, 1]
+    return 0.5 * float(abs(np.dot(x, np.roll(y, -1)) - np.dot(np.roll(x, -1), y)))
+
+
+def _point_to_segment_dist_2d(pt: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
+    ab = b - a
+    denom = float(np.dot(ab, ab))
+    if denom <= 1e-30:
+        return float(np.linalg.norm(pt - a))
+    t = float(np.clip(np.dot(pt - a, ab) / denom, 0.0, 1.0))
+    return float(np.linalg.norm(pt - (a + t * ab)))
+
+
+def stability(mesh, *, margin_mm: float = 1.0):
+    """Static resting stability: CoM XY projection vs bottom support convex hull.
+
+    Computes the volumetric center of mass (assuming uniform density) and
+    projects it onto XY, then measures its signed distance to the 2D convex
+    hull of the mesh's bottom contact footprint (``z <= z_min + tol``).
+    Positive clearance means inside the support hull; negative means outside.
+    """
+    margin = float(margin_mm)
+    if not math.isfinite(margin) or margin < 0.0:
+        raise ValueError("margin_mm must be finite and >= 0")
+    v = np.asarray(mesh.verts, dtype=np.float64)
+    f = np.asarray(mesh.faces, dtype=np.int64)
+    if len(v) == 0 or len(f) == 0:
+        return _check("stability", None, {}, "empty mesh",
+                      detail={"method": "com_xy_vs_z_min_convex_hull",
+                              "margin_mm": margin})
+    if abs(float(M.volume(mesh))) <= 1e-18:
+        return _check("stability", None, {}, "zero-volume mesh; center of mass undefined",
+                      detail={"method": "com_xy_vs_z_min_convex_hull",
+                              "margin_mm": margin})
+
+    verts_mm = v * 1000.0
+    com_mm = np.asarray(M.centroid(mesh), dtype=np.float64) * 1000.0
+    com_xy = com_mm[:2]
+
+    z_min = float(verts_mm[:, 2].min())
+    z_span = float(verts_mm[:, 2].max()) - z_min
+    tol = min(0.5, max(1e-4, z_span * 2e-3))
+    bottom_xy = verts_mm[verts_mm[:, 2] <= z_min + tol, :2]
+
+    hull = _convex_hull_2d(bottom_xy)
+    hull_area = _polygon_area_2d(hull)
+    degenerate = len(hull) < 3 or hull_area <= 1e-6
+
+    if len(hull) == 0:
+        clearance = float("-inf")
+    elif len(hull) == 1:
+        clearance = -float(np.linalg.norm(com_xy - hull[0]))
+    elif degenerate:
+        m = len(hull)
+        clearance = -min(
+            _point_to_segment_dist_2d(com_xy, hull[i], hull[(i + 1) % m])
+            for i in range(m)
+        )
+    else:
+        inward_dists = []
+        edge_dists = []
+        m = len(hull)
+        for i in range(m):
+            a = hull[i]
+            b = hull[(i + 1) % m]
+            edge = b - a
+            elen = float(np.linalg.norm(edge))
+            if elen <= 1e-12:
+                continue
+            # Outward normal for CCW polygon.
+            out_n = np.array([edge[1], -edge[0]], dtype=np.float64) / elen
+            inward_dists.append(-float(np.dot(com_xy - a, out_n)))
+            edge_dists.append(_point_to_segment_dist_2d(com_xy, a, b))
+        if not inward_dists:
+            degenerate = True
+            clearance = -float(np.linalg.norm(com_xy - hull[0]))
+        elif min(inward_dists) >= 0.0:
+            clearance = min(inward_dists)
+        else:
+            clearance = -min(edge_dists)
+
+    ok = False if degenerate else bool(clearance >= margin)
+    if degenerate:
+        advice = ("bottom contact footprint has zero support area: flatten or "
+                  "widen the base so the part can rest stably")
+    elif ok:
+        advice = ("center of mass XY projection lies %.2f mm inside the support "
+                  "convex hull (margin %.2f mm)" % (clearance, margin))
+    elif clearance < 0.0:
+        advice = ("center of mass XY projection falls %.2f mm outside the "
+                  "support footprint: widen the base or shift overhanging mass "
+                  "back over the support" % abs(clearance))
+    else:
+        advice = ("center of mass XY projection is only %.2f mm inside the "
+                  "support footprint (< %.2f mm margin): widen the base or "
+                  "center the mass" % (clearance, margin))
+
+    return _check(
+        "stability", ok,
+        {
+            "com_xy_mm": [round(float(com_xy[0]), 4), round(float(com_xy[1]), 4)],
+            "clearance_to_hull_mm": round(float(clearance), 4),
+            "margin_mm": margin,
+            "support_points": int(len(bottom_xy)),
+            "hull_vertices": int(len(hull)),
+            "z_min_mm": round(z_min, 4),
+        },
+        advice,
+        detail={
+            "method": "com_xy_vs_z_min_convex_hull",
+            "margin_mm": margin,
+            "z_tol_mm": round(tol, 6),
+            "hull_area_mm2": round(hull_area, 4),
+            "com_mm": [round(float(x), 4) for x in com_mm],
+            "degenerate_footprint": bool(degenerate),
+        },
+    )
+
+
 # ---------------------------------------------------------------- report
 
 def design_report(mesh, *, target_size_mm=None, rules=None,
                   min_wall_mm=0.8, max_overhang_deg=45.0,
                   min_draft_deg=1.0, tool_radius_mm=3.0,
-                  readability_threshold=0.90) -> dict:
+                  readability_threshold=0.90,
+                  margin_mm: float = 1.0) -> dict:
     """Run the design rules and return one report.
 
     ``rules`` selects a subset by id; the default runs all of them.  Every
@@ -510,6 +678,8 @@ def design_report(mesh, *, target_size_mm=None, rules=None,
         checks.append(moldability(mesh, min_draft_deg=min_draft_deg))
     if want("machinability"):
         checks.append(machinability(mesh, tool_radius_mm=tool_radius_mm))
+    if want("stability"):
+        checks.append(stability(mesh, margin_mm=margin_mm))
 
     failed = [c for c in checks if c["ok"] is False]
     passed = [c for c in checks if c["ok"] is True]

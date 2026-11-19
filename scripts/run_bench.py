@@ -1931,6 +1931,8 @@ def main(argv=None):
                     help="bench name (generalization_v1, generalization_v2, ...)")
     ap.add_argument("--cases", default=None,
                     help="case file (default corpus/bench/<bench>.json)")
+    ap.add_argument("--prompts", default=None,
+                    help="Text2CAD-style L0-L3 prompt benchmark JSON file")
     ap.add_argument("--out", default=None)
     ap.add_argument("--regenerate", action="store_true",
                     help="rebuild the case list from corpus/normalized/*.jsonl")
@@ -1957,6 +1959,11 @@ def main(argv=None):
     import tempfile
     os.environ["ATTA_HOME"] = os.path.abspath(
         args.atta_home or tempfile.mkdtemp(prefix="atta-bench-"))
+    if args.prompts:
+        out = args.out or args.prompts
+        run_prompts_bench(args.prompts, out_path=out, limit=args.limit,
+                          quiet=args.quiet)
+        return 0
     BENCH_VERSION = args.bench
     if args.cases is None:
         args.cases = os.path.join(ROOT, "corpus/bench", BENCH_VERSION + ".json")
@@ -2126,6 +2133,448 @@ def protocol_doc(n_cases=None):
             "degraded verify is counted as a failure.",
         ],
     }
+
+
+# ---------------------------------------------------------------- prompts (L0-L3)
+
+def _conjure_plan_to_spec(plan: dict, name: str) -> dict:
+    """Convert a conjure plan to a Spec v3 feature-graph dict (never a recipe)."""
+    import copy
+    from atta import spec as specmod
+
+    hint = copy.deepcopy(plan["build"])
+    kind = hint.get("kind")
+    if kind == "graph":
+        model_plan = {
+            "kind": "graph",
+            "features": hint["features"],
+            "output": hint["output"],
+        }
+    elif kind is None:
+        op = str(hint.pop("op", "sdf_blend"))
+        box = hint.pop("size_mm", None)
+        if op == "sdf_blend" and "size" not in hint and box is not None:
+            hint["size"] = box
+        model_plan = {
+            "kind": "graph",
+            "output": "body",
+            "features": [{"id": "body", "op": op, "args": hint}],
+        }
+    else:
+        raise RuntimeError("unsupported conjure build kind %r (recipes forbidden)" % kind)
+
+    parsed = plan.get("prompt_parsed") or {}
+    material = parsed.get("material") or "ceramic"
+    return {
+        "schema": specmod.SCHEMA,
+        "name": str(name),
+        "model": model_plan,
+        "quality": "draft",
+        "material": material,
+        "finish": {},
+        "constraints": copy.deepcopy(plan.get("constraints") or {}),
+        "assumptions": list(plan.get("assumptions") or []),
+    }
+
+
+def _eval_prompt_predicates(pred: dict, *, topo: dict, bbox_size: list[float],
+                            wall: dict, design_checks: dict,
+                            plan: dict, spec_material: str) -> dict:
+    """Evaluate reference-free executable geometric predicates on measured mesh."""
+    results = {}
+
+    if "closed" in pred:
+        got = bool(topo.get("closed"))
+        results["closed"] = {
+            "ok": got is bool(pred["closed"]),
+            "measured": got,
+            "expected": bool(pred["closed"]),
+        }
+
+    if "n_components" in pred:
+        got = int(topo.get("n_components", -1))
+        exp = int(pred["n_components"])
+        results["n_components"] = {
+            "ok": got == exp,
+            "measured": got,
+            "expected": exp,
+        }
+
+    if "genus_min" in pred:
+        got = int(topo.get("genus", -1))
+        exp = int(pred["genus_min"])
+        results["genus_min"] = {
+            "ok": got >= exp,
+            "measured": got,
+            "expected": ">= %d" % exp,
+        }
+
+    if "genus_exact" in pred:
+        got = int(topo.get("genus", -1))
+        exp = int(pred["genus_exact"])
+        results["genus_exact"] = {
+            "ok": got == exp,
+            "measured": got,
+            "expected": exp,
+        }
+
+    if "min_wall_mm" in pred:
+        got = wall.get("min_mm")
+        exp = float(pred["min_wall_mm"])
+        ok = got is not None and float(got) >= exp
+        results["min_wall_mm"] = {
+            "ok": ok,
+            "measured": None if got is None else round(float(got), 4),
+            "expected": ">= %.3f" % exp,
+        }
+
+    if "max_wall_mm" in pred:
+        got = wall.get("min_mm")
+        exp = float(pred["max_wall_mm"])
+        ok = got is not None and float(got) <= exp
+        results["max_wall_mm"] = {
+            "ok": ok,
+            "measured": None if got is None else round(float(got), 4),
+            "expected": "<= %.3f" % exp,
+        }
+
+    if "aspect_ratio_range" in pred:
+        lo, hi = (float(x) for x in pred["aspect_ratio_range"])
+        s = sorted((float(x) for x in bbox_size), reverse=True)
+        mode = pred.get("aspect_mode", "max_over_min")
+        denom = s[1] if mode == "long_over_mid" else s[2]
+        ratio = (s[0] / denom) if denom > 0 else float("inf")
+        results["aspect_ratio"] = {
+            "ok": bool(lo <= ratio <= hi),
+            "measured": round(ratio, 4),
+            "expected": [lo, hi],
+            "mode": mode,
+        }
+
+    if "bbox_check" in pred:
+        bc = pred["bbox_check"]
+        mode = bc.get("mode")
+        if mode == "sorted_xyz":
+            got_s = sorted((float(x) for x in bbox_size), reverse=True)
+            exp_s = sorted((float(x) for x in bc["target_mm"]), reverse=True)
+            tol_pct = float(bc.get("tol_pct", 5.0))
+            errs = [abs(a - b) / max(b, 1e-6) * 100.0 for a, b in zip(got_s, exp_s)]
+            worst = max(errs)
+            results["bbox_check"] = {
+                "ok": worst <= tol_pct,
+                "measured": [round(x, 3) for x in got_s],
+                "expected": exp_s,
+                "max_rel_err_pct": round(worst, 3),
+                "tol_pct": tol_pct,
+            }
+        elif mode == "max_xy_range":
+            got_xy = max(float(bbox_size[0]), float(bbox_size[1]))
+            lo, hi = float(bc["min"]), float(bc["max"])
+            results["bbox_check"] = {
+                "ok": lo <= got_xy <= hi,
+                "measured": round(got_xy, 3),
+                "expected": [lo, hi],
+            }
+        elif mode == "z_range":
+            got_z = float(bbox_size[2])
+            lo, hi = float(bc["min"]), float(bc["max"])
+            results["bbox_check"] = {
+                "ok": lo <= got_z <= hi,
+                "measured": round(got_z, 3),
+                "expected": [lo, hi],
+            }
+        elif mode == "max_dim_le":
+            got_max = max(float(x) for x in bbox_size)
+            lim = float(bc["max"])
+            results["bbox_check"] = {
+                "ok": got_max <= lim,
+                "measured": round(got_max, 3),
+                "expected": "<= %.3f" % lim,
+            }
+        elif mode == "sorted_aspect_min":
+            s = sorted((float(x) for x in bbox_size), reverse=True)
+            ar = (s[0] / s[1]) if s[1] > 0 else 0.0
+            lim = float(bc["min"])
+            results["bbox_check"] = {
+                "ok": ar >= lim,
+                "measured": round(ar, 4),
+                "expected": ">= %.3f" % lim,
+            }
+
+    if "min_symmetric_axes" in pred:
+        sym = design_checks.get("symmetry") or {}
+        axes = list((sym.get("value") or {}).get("axes") or [])
+        need = int(pred["min_symmetric_axes"])
+        results["symmetry"] = {
+            "ok": len(axes) >= need,
+            "measured": axes,
+            "expected": ">= %d axes" % need,
+        }
+
+    if "symmetry_axes" in pred:
+        sym = design_checks.get("symmetry") or {}
+        axes = list((sym.get("value") or {}).get("axes") or [])
+        req = list(pred["symmetry_axes"])
+        results["symmetry"] = {
+            "ok": all(ax in axes for ax in req),
+            "measured": axes,
+            "expected": req,
+        }
+
+    if pred.get("stability_required"):
+        stab = design_checks.get("stability") or {}
+        results["stability"] = {
+            "ok": stab.get("ok") is True,
+            "measured": stab.get("value"),
+            "expected": True,
+        }
+
+    if "readability_min" in pred:
+        rd = design_checks.get("readability") or {}
+        score = (rd.get("value") or {}).get("score")
+        need = float(pred["readability_min"])
+        results["readability"] = {
+            "ok": score is not None and float(score) >= need,
+            "measured": score,
+            "expected": ">= %.3f" % need,
+        }
+
+    if "expected_material" in pred:
+        exp_m = str(pred["expected_material"])
+        results["material"] = {
+            "ok": str(spec_material) == exp_m,
+            "measured": spec_material,
+            "expected": exp_m,
+        }
+
+    if "expected_provenance_size" in pred:
+        got_p = (plan.get("provenance") or {}).get("size_mm")
+        exp_p = str(pred["expected_provenance_size"])
+        results["provenance_honesty"] = {
+            "ok": got_p == exp_p,
+            "measured": got_p,
+            "expected": exp_p,
+        }
+
+    return results
+
+
+def run_prompt_case(case: dict) -> dict:
+    """Execute one L0-L3 prompt case: prompt -> conjure -> propose -> model -> verify -> design."""
+    from atta import conjure, engine, mesh as M, metrology, spec as specmod
+
+    t0 = time.perf_counter()
+    out = dict(case)
+    out.update({
+        "archetype_key": None,
+        "matched_by": None,
+        "provenance_size": None,
+        "propose_ok": False,
+        "model_id": None,
+        "build_success": False,
+        "verify_verdict": None,
+        "verify_pass": False,
+        "predicate_results": {},
+        "failed_predicates": [],
+        "predicate_pass": False,
+        "case_pass": False,
+        "measured_bbox_mm": None,
+        "measured_genus": None,
+        "measured_components": None,
+        "measured_min_wall_mm": None,
+        "seconds": None,
+        "notes": "",
+    })
+
+    old = None
+    try:
+        if hasattr(signal, "SIGALRM"):
+            old = signal.signal(signal.SIGALRM, _alarm)
+            signal.alarm(CASE_BUDGET_S)
+
+        plan = conjure.conjure_from_prompt(
+            case["prompt"], seed=int(case.get("seed", 0)))
+        out["archetype_key"] = (plan.get("archetype") or {}).get("key")
+        out["matched_by"] = (plan.get("archetype") or {}).get("matched_by")
+        out["provenance_size"] = (plan.get("provenance") or {}).get("size_mm")
+
+        spec_obj = _conjure_plan_to_spec(plan, case["id"])
+        proposed = specmod.propose_spec(spec_obj)
+        out["propose_ok"] = bool(proposed.get("ok"))
+        if not out["propose_ok"]:
+            out["notes"] = "propose_spec failed: %s" % proposed.get("errors")
+            return out
+
+        built = engine.model(spec=proposed["spec"], quality="draft", name=case["id"])
+        out["model_id"] = built.get("model_id")
+        out["build_success"] = bool(out["model_id"])
+        if not out["build_success"]:
+            out["notes"] = "engine.model returned no model_id"
+            return out
+
+        ver = engine.verify(model_id=out["model_id"], level="standard")
+        out["verify_verdict"] = ver.get("verdict")
+        out["verify_pass"] = ver.get("verdict") == "pass"
+
+        des = engine.design(model_id=out["model_id"])
+        design_checks = {c["id"]: c for c in (des.get("checks") or [])}
+
+        _, mesh_obj, _ = engine._load(out["model_id"])
+        topo = M.topology(mesh_obj)
+        bbox_size = metrology.bbox_mm(mesh_obj)["size"]
+        wall = metrology.wall_thickness(mesh_obj, max_samples=400)
+
+        out["measured_bbox_mm"] = [round(float(x), 3) for x in bbox_size]
+        out["measured_genus"] = int(topo["genus"])
+        out["measured_components"] = int(topo["n_components"])
+        out["measured_min_wall_mm"] = wall.get("min_mm")
+
+        pred_res = _eval_prompt_predicates(
+            case.get("predicates") or {},
+            topo=topo,
+            bbox_size=bbox_size,
+            wall=wall,
+            design_checks=design_checks,
+            plan=plan,
+            spec_material=proposed["spec"].get("material"),
+        )
+        failed = [k for k, v in pred_res.items() if not v.get("ok")]
+        out["predicate_results"] = pred_res
+        out["failed_predicates"] = failed
+        out["predicate_pass"] = len(failed) == 0
+        out["case_pass"] = bool(
+            out["propose_ok"]
+            and out["build_success"]
+            and out["verify_pass"]
+            and out["predicate_pass"]
+        )
+        if failed:
+            out["notes"] = "failed predicates: " + ", ".join(failed)
+        elif not out["verify_pass"]:
+            out["notes"] = "verify=%s" % out["verify_verdict"]
+        else:
+            out["notes"] = "ok (%s)" % out["archetype_key"]
+    except Exception as exc:
+        out["notes"] = "%s: %s" % (type(exc).__name__, exc)
+    finally:
+        if hasattr(signal, "SIGALRM"):
+            try:
+                signal.alarm(0)
+                if old is not None:
+                    signal.signal(signal.SIGALRM, old)
+            except Exception:
+                pass
+        out["seconds"] = round(time.perf_counter() - t0, 3)
+    return out
+
+
+def summarize_prompts(cases: list[dict], tiers: list[str] | None = None) -> dict:
+    tier_order = list(tiers or ["L0_abstract", "L1_beginner", "L2_intermediate", "L3_expert"])
+
+    def _stats(rows):
+        n = len(rows)
+        if n == 0:
+            return {"cases": 0, "build_success": 0.0, "propose_ok": 0.0,
+                    "verify_pass": 0.0, "predicate_pass": 0.0, "case_pass": 0.0}
+        return {
+            "cases": n,
+            "build_success": round(sum(1 for r in rows if r.get("build_success")) / n, 4),
+            "propose_ok": round(sum(1 for r in rows if r.get("propose_ok")) / n, 4),
+            "verify_pass": round(sum(1 for r in rows if r.get("verify_pass")) / n, 4),
+            "predicate_pass": round(sum(1 for r in rows if r.get("predicate_pass")) / n, 4),
+            "case_pass": round(sum(1 for r in rows if r.get("case_pass")) / n, 4),
+            "passed_count": sum(1 for r in rows if r.get("case_pass")),
+        }
+
+    by_tier = {}
+    for tier in tier_order:
+        rows = [c for c in cases if c.get("tier") == tier]
+        by_tier[tier] = _stats(rows)
+
+    pred_counts = {}
+    for c in cases:
+        for pname, pres in (c.get("predicate_results") or {}).items():
+            entry = pred_counts.setdefault(pname, {"passed": 0, "total": 0})
+            entry["total"] += 1
+            if pres.get("ok"):
+                entry["passed"] += 1
+    by_predicate = {
+        k: {"passed": v["passed"], "total": v["total"],
+            "rate": round(v["passed"] / v["total"], 4) if v["total"] else 0.0}
+        for k, v in sorted(pred_counts.items())
+    }
+
+    overall = _stats(cases)
+    overall["seconds_total"] = round(sum(float(c.get("seconds") or 0.0) for c in cases), 2)
+    overall["by_tier"] = by_tier
+    overall["by_predicate"] = by_predicate
+    return overall
+
+
+def run_prompts_bench(prompts_path: str, *, out_path: str | None = None,
+                      limit: int = 0, quiet: bool = False) -> dict:
+    doc = json.load(open(prompts_path, encoding="utf-8"))
+    cases = list(doc.get("cases") or [])
+    if limit:
+        cases = cases[:int(limit)]
+    results = []
+    for i, c in enumerate(cases, 1):
+        res = run_prompt_case(c)
+        results.append(res)
+        if not quiet:
+            print("[%2d/%2d] %-15s %-10s %-5s %-8s %5.2fs %s" % (
+                i, len(cases),
+                str(res.get("tier"))[:15],
+                str(res.get("archetype_key"))[:10],
+                "PASS" if res.get("case_pass") else "FAIL",
+                res.get("verify_verdict") or "-",
+                res.get("seconds") or 0.0,
+                (res.get("notes") or "")[:65]), flush=True)
+
+    summary = summarize_prompts(results, tiers=doc.get("tiers"))
+    failures = [
+        {
+            "id": r.get("id"),
+            "tier": r.get("tier"),
+            "category": r.get("category"),
+            "prompt": r.get("prompt"),
+            "archetype_key": r.get("archetype_key"),
+            "verify_verdict": r.get("verify_verdict"),
+            "failed_predicates": r.get("failed_predicates"),
+            "notes": r.get("notes"),
+        }
+        for r in results if not r.get("case_pass")
+    ]
+    report = {
+        "bench": doc.get("bench", "generalization_v3_prompts"),
+        "version": doc.get("version", "1.2.3beta"),
+        "evaluated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "source_file": os.path.relpath(prompts_path, ROOT) if os.path.isabs(prompts_path) else prompts_path,
+        "tiers": doc.get("tiers", ["L0_abstract", "L1_beginner", "L2_intermediate", "L3_expert"]),
+        "summary": summary,
+        "failures": failures,
+        "cases": results,
+    }
+    if out_path:
+        os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(report, fh, ensure_ascii=False, indent=1)
+
+    if not quiet:
+        print("\n== %s  n=%d  (%.2fs)" % (
+            report["bench"], summary["cases"], summary["seconds_total"]))
+        print("overall case_pass=%.1f%% (%d/%d)  build=%.1f%%  verify=%.1f%%  predicates=%.1f%%" % (
+            100.0 * summary["case_pass"], summary["passed_count"], summary["cases"],
+            100.0 * summary["build_success"], 100.0 * summary["verify_pass"],
+            100.0 * summary["predicate_pass"]))
+        for tname, ts in summary["by_tier"].items():
+            print("  %-16s %2d/%-2d (%5.1f%%)  build=%.1f%%  verify=%.1f%%  pred=%.1f%%" % (
+                tname, ts.get("passed_count", 0), ts["cases"],
+                100.0 * ts["case_pass"], 100.0 * ts["build_success"],
+                100.0 * ts["verify_pass"], 100.0 * ts["predicate_pass"]))
+        if out_path:
+            print("wrote", out_path)
+    return report
 
 
 if __name__ == "__main__":

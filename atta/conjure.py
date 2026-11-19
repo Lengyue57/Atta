@@ -49,6 +49,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import math
+import re
 
 import numpy as np
 
@@ -56,6 +57,7 @@ from .errors import AttaError
 
 __all__ = [
     "conjure",
+    "conjure_from_prompt",
     "archetypes",
     "archetype",
     "STYLES",
@@ -288,6 +290,62 @@ ARCHETYPES = {
         "parts": {"body": 1.0},
         "variation": 0.20, "tags": ["generic"],
     },
+    # ---- mechanical / industrial / product CAD archetypes ------------------
+    "flange": {
+        "category": "mechanical", "size_mm": [120, 120, 18],
+        "ratios": {"bore": 0.36, "bolt_circle": 0.72, "bolt_d": 0.08,
+                   "bolt_count": 6.0, "hub_h": 0.35, "wall": 0.12},
+        "parts": {"plate": 0.68, "hub": 0.32},
+        "variation": 0.10, "tags": ["mechanical", "symmetric", "radial"],
+    },
+    "bracket": {
+        "category": "mechanical", "size_mm": [80, 60, 70],
+        "ratios": {"wall": 0.12, "hole_d": 0.12, "hole_count": 2.0},
+        "parts": {"base": 0.52, "upright": 0.48},
+        "variation": 0.10, "tags": ["mechanical", "structural"],
+    },
+    "enclosure": {
+        "category": "product", "size_mm": [140, 100, 55],
+        "ratios": {"wall": 0.045},
+        "parts": {"walls": 0.65, "floor": 0.35},
+        "variation": 0.10, "tags": ["container", "hollow", "symmetric"],
+    },
+    "vase": {
+        "category": "product", "size_mm": [110, 110, 220],
+        "ratios": {"wall": 0.032, "neck": 0.56, "shoulder": 0.28},
+        "parts": {"body": 0.72, "neck": 0.28},
+        "variation": 0.12, "tags": ["holdable", "hollow", "radial"],
+    },
+    "bowl": {
+        "category": "product", "size_mm": [180, 180, 75],
+        "ratios": {"wall": 0.04, "foot": 0.48},
+        "parts": {"wall": 0.75, "base": 0.25},
+        "variation": 0.12, "tags": ["holdable", "hollow", "radial"],
+    },
+    "gear": {
+        "category": "mechanical", "size_mm": [90, 90, 16],
+        "ratios": {"tooth_count": 16.0, "bore": 0.24, "addendum": 0.08},
+        "parts": {"rim": 0.65, "web": 0.35},
+        "variation": 0.08, "tags": ["mechanical", "radial", "symmetric"],
+    },
+    "tube": {
+        "category": "mechanical", "size_mm": [50, 50, 80],
+        "ratios": {"wall": 0.14},
+        "parts": {"wall": 1.0},
+        "variation": 0.10, "tags": ["mechanical", "hollow", "radial"],
+    },
+    "heatsink": {
+        "category": "mechanical", "size_mm": [80, 80, 32],
+        "ratios": {"base": 0.24, "fin_count": 7.0, "fin_thickness": 0.045},
+        "parts": {"base": 0.35, "fins": 0.65},
+        "variation": 0.08, "tags": ["mechanical", "symmetric"],
+    },
+    "lamp": {
+        "category": "product", "size_mm": [160, 160, 320],
+        "ratios": {"base_h": 0.08, "stem_r": 0.06, "shade_h": 0.36},
+        "parts": {"base": 0.25, "stem": 0.25, "shade": 0.50},
+        "variation": 0.10, "tags": ["human_scale", "radial", "symmetric"],
+    },
 }
 
 #: Human-scale anchors, in mm.  Anything a person operates is sized against
@@ -340,7 +398,27 @@ SYNONYMS = {
     "ringed_planet": ["ringed planet", "ringed gas giant", "saturn", "ringed world",
                       "带环行星", "土星", "有环行星"],
     "generic": ["object", "thing", "物体", "东西"],
+    "flange": ["mounting flange", "pipe flange", "bolt flange", "法兰", "法兰盘"],
+    "bracket": ["l-bracket", "l bracket", "mounting bracket", "angle bracket",
+                "corner bracket", "支架", "角铁", "角码"],
+    "enclosure": ["project box", "electronics enclosure", "junction box",
+                  "housing", "外壳", "机壳", "盒"],
+    "vase": ["flower vase", "ceramic vase", "花瓶", "瓶"],
+    "bowl": ["mixing bowl", "salad bowl", "碗"],
+    "gear": ["spur gear", "cogwheel", "toothed gear", "齿轮"],
+    "tube": ["bushing", "sleeve", "spacer tube", "pipe", "hollow cylinder",
+             "套筒", "管", "圆管"],
+    "heatsink": ["heat sink", "cooling fin", "fin array", "散热片", "散热器"],
+    "lamp": ["desk lamp", "table lamp", "pedestal lamp", "台灯", "灯"],
 }
+
+
+def _word_in_text(word: str, text: str) -> bool:
+    """Word-boundary match for ASCII tokens; substring match for CJK/non-ASCII."""
+    if all(ord(ch) < 128 for ch in word):
+        pat = r"(?<![a-z0-9_])" + re.escape(word) + r"(?![a-z0-9_])"
+        return re.search(pat, text) is not None
+    return word in text
 
 
 # ---------------------------------------------------------------- seed
@@ -358,13 +436,12 @@ def _match(label: str):
     Resolution order, most specific first:
 
     1. an exact archetype key;
-    2. the **longest** synonym (English or Chinese) contained in the label —
-       so "rifle magazine" resolves to ``magazine``, not ``rifle``;
-    3. the longest archetype key contained in the label;
-    4. ``generic``.
-
-    Longest-match is the whole point: a naive token scan picks the first word
-    and turns a magazine into a rifle.
+    2. the **longest** word-boundary synonym (or CJK substring) in the label —
+       so "rifle magazine" resolves to ``magazine``, not ``rifle``, while
+       "carpet" does not falsely match ``car``;
+    3. the longest word-boundary archetype key in the label;
+    4. substring fallback for compound labels;
+    5. ``generic``.
     """
     text = str(label or "").strip().lower()
     if not text:
@@ -376,13 +453,13 @@ def _match(label: str):
     for key, words in SYNONYMS.items():
         for word in [key] + list(words):
             w = word.lower()
-            if w and w in text and len(w) > best_len:
+            if w and _word_in_text(w, text) and len(w) > best_len:
                 best_key, best_len, best_src = key, len(w), "synonym"
     if best_key:
         return best_key, best_src
 
     for key in ARCHETYPES:
-        if key in text and len(key) > best_len:
+        if _word_in_text(key, text) and len(key) > best_len:
             best_key, best_len = key, len(key)
     if best_key:
         return best_key, "substring"
@@ -557,6 +634,41 @@ def conjure(label: str, *, seed: int = 0, style: str = "neutral",
             ratios[name] = weight / total_weight
             provenance["ratios.%s" % name] = (
                 "archetype" if style == "neutral" else "derived")
+
+    # Apply explicit caller parameter overrides from constraints (if provided).
+    if cons.get("wall_mm") is not None:
+        wmm = float(cons["wall_mm"])
+        if not math.isfinite(wmm) or wmm <= 0.0:
+            raise AttaError("bad_arg", "wall_mm must be positive",
+                            path="constraints.wall_mm", fix="pass wall_mm > 0")
+        ratios["wall"] = round(wmm / max(float(size.min()), 1e-6), 6)
+        provenance["ratios.wall"] = "measured"
+        provenance_detail["ratios.wall"] = {
+            "source": "measured", "source_value_mm": wmm}
+    if cons.get("hole_count") is not None:
+        hc = int(cons["hole_count"])
+        if hc < 0:
+            raise AttaError("bad_arg", "hole_count must be >= 0",
+                            path="constraints.hole_count", fix="pass hole_count >= 0")
+        for rkey in ("bolt_count", "hole_count"):
+            if rkey in ratios:
+                ratios[rkey] = hc
+                provenance["ratios.%s" % rkey] = "measured"
+    if cons.get("tooth_count") is not None and "tooth_count" in ratios:
+        tc = int(cons["tooth_count"])
+        if tc < 3:
+            raise AttaError("bad_arg", "tooth_count must be >= 3",
+                            path="constraints.tooth_count", fix="pass tooth_count >= 3")
+        ratios["tooth_count"] = tc
+        provenance["ratios.tooth_count"] = "measured"
+    if cons.get("fin_count") is not None and "fin_count" in ratios:
+        fc = int(cons["fin_count"])
+        if fc < 1:
+            raise AttaError("bad_arg", "fin_count must be >= 1",
+                            path="constraints.fin_count", fix="pass fin_count >= 1")
+        ratios["fin_count"] = fc
+        provenance["ratios.fin_count"] = "measured"
+
     notes.append("style %r modulated ratios (bulk %.2f, taper %.2f, detail %.2f)"
                  % (style, vec["bulk"], vec["taper"], vec["detail"]))
 
@@ -689,8 +801,23 @@ def _build_hint(key, arch, size, ratios, vec, rng):
                      "center_mm": [0, 0, round(sz * 0.30, 2)]},
                 ]}
 
-    if key in ("mug", "bottle", "helmet"):
+    if key in ("mug", "bottle", "helmet", "vase", "bowl"):
         return _shell_graph(key, size, ratios, vec)
+
+    if key == "flange":
+        return _flange_graph(size, ratios)
+    if key == "bracket":
+        return _bracket_graph(size, ratios)
+    if key == "enclosure":
+        return _enclosure_graph(size, ratios)
+    if key == "gear":
+        return _gear_graph(size, ratios)
+    if key == "tube":
+        return _tube_graph(size, ratios)
+    if key == "heatsink":
+        return _heatsink_graph(size, ratios)
+    if key == "lamp":
+        return _lamp_graph(size, ratios)
 
     if key in ("tool_box", "grip", "magazine"):
         # Hollow shell + one or two functional features.  The shell is made by
@@ -760,7 +887,7 @@ def _shell_graph(key, size, ratios, vec):
     ``wall`` is a nominal budget; verification still measures the resulting mesh.
     """
     sx, sy, h = (float(v) for v in size)
-    wall = min(max(0.3, min(size) * ratios["wall"]), min(size) * 0.10)
+    wall = min(max(0.3, min(size) * ratios["wall"]), min(size) * 0.25)
     features = []
     if key == "helmet":
         # An ellipsoidal crown, closed above and open DOWN for the wearer's head.
@@ -791,6 +918,22 @@ def _shell_graph(key, size, ratios, vec):
         r = radius * (0.91 + 0.09 * np.sin(math.pi * z / h))
         r += (top - radius * 0.91) * (z / h) ** 5
         r = np.minimum(r, radius)
+    elif key == "vase":
+        radius = min(sx, sy) * 0.5
+        neck_fraction = min(0.75, max(0.35, ratios.get("neck", 0.56)))
+        z = np.linspace(0.0, h, 33)
+        t = z / h
+        belly = 0.62 + 0.38 * np.sin(math.pi * np.clip(t / 0.85, 0.0, 1.0))
+        neck_blend = np.clip((t - 0.55) / 0.45, 0.0, 1.0)
+        lip = neck_fraction + 0.10 * np.clip((t - 0.82) / 0.18, 0.0, 1.0)
+        r = radius * ((1.0 - neck_blend) * belly + neck_blend * lip)
+        r = np.maximum(r, radius * 0.35)
+    elif key == "bowl":
+        radius = min(sx, sy) * 0.5
+        foot = min(0.70, max(0.35, ratios.get("foot", 0.48)))
+        z = np.linspace(0.0, h, 25)
+        t = z / h
+        r = radius * (foot + (1.0 - foot) * (1.5 * t - 0.5 * t ** 2))
     else:
         radius = min(sx, sy) * 0.5
         neck_fraction = min(0.50, max(0.18, ratios["neck"]))
@@ -815,7 +958,7 @@ def _shell_graph(key, size, ratios, vec):
     features.append({"id": "vessel", "op": "revolve", "args": {
         "profile_rz": np.round(profile, 6).tolist(), "segments": 64}})
     output = "vessel"
-    if key == "bottle":
+    if key in ("bottle", "vase", "bowl"):
         features.append({"id": "body", "op": "transform", "inputs": [output],
                          "args": {"scale": [sx / (2 * radius), sy / (2 * radius), 1.0]}})
         output = "body"
@@ -1233,3 +1376,549 @@ def _structure_hint(key, size, ratios, rng):
             "blend_mm": round(wall * 0.5, 2), "primitives": prims,
             "shell_mm": round(wall, 2)}
     return hint
+
+
+# ---------------------------------------------------------------- CAD graphs
+
+def _circle_loop(radius: float, n: int = 48, cx: float = 0.0, cy: float = 0.0):
+    theta = np.linspace(0.0, 2.0 * math.pi, int(n), endpoint=False)
+    pts = np.column_stack([cx + radius * np.cos(theta), cy + radius * np.sin(theta)])
+    return np.round(pts, 6).tolist()
+
+
+def _flange_graph(size, ratios):
+    sx, sy, h = (float(v) for v in size)
+    r_out = 0.5 * min(sx, sy)
+    r_bore = max(1.5, r_out * min(0.65, max(0.12, float(ratios.get("bore", 0.36)))))
+    n_bolts = int(max(0, min(16, round(float(ratios.get("bolt_count", 6.0))))))
+    r_bc = r_bore + (r_out - r_bore) * 0.56
+    r_bolt = max(1.2, min((r_out - r_bc) * 0.42, (r_bc - r_bore) * 0.42,
+                          r_out * float(ratios.get("bolt_d", 0.08)) * 0.9))
+    if n_bolts >= 2:
+        max_chord = r_bc * math.sin(math.pi / n_bolts) * 0.65
+        r_bolt = min(r_bolt, max(1.0, max_chord))
+
+    holes_plate = [_circle_loop(r_bore, n=48)]
+    for i in range(n_bolts):
+        ang = 2.0 * math.pi * i / n_bolts
+        holes_plate.append(_circle_loop(
+            r_bolt, n=24, cx=r_bc * math.cos(ang), cy=r_bc * math.sin(ang)))
+
+    hub_h_frac = min(0.45, max(0.0, float(ratios.get("hub_h", 0.35))))
+    plate_h = max(2.0, h * (1.0 - hub_h_frac))
+    features = [
+        {"id": "plate", "op": "extrude", "args": {
+            "loop_xy": _circle_loop(r_out, n=64),
+            "height": round(plate_h, 6),
+            "holes_xy": holes_plate,
+        }},
+    ]
+    out = "plate"
+    if h - plate_h >= 1.0 and r_bc - r_bolt - r_bore > 3.0:
+        r_hub = r_bore + 0.55 * ((r_bc - r_bolt) - r_bore)
+        if r_hub > r_bore + 1.5:
+            features.append({"id": "hub", "op": "extrude", "args": {
+                "loop_xy": _circle_loop(r_hub, n=48),
+                "height": round(h, 6),
+                "holes_xy": [_circle_loop(r_bore, n=48)],
+            }})
+            features.append({"id": "flange_solid", "op": "union",
+                             "inputs": ["plate", "hub"]})
+            out = "flange_solid"
+    if abs(sx - sy) > 1e-3:
+        features.append({"id": "body", "op": "transform", "inputs": [out],
+                         "args": {"scale": [sx / (2.0 * r_out), sy / (2.0 * r_out), 1.0]}})
+        out = "body"
+    return {
+        "kind": "graph", "features": features, "output": out,
+        "size_mm": [sx, sy, h],
+        "constraints": {"genus": 1 + n_bolts, "n_components": 1},
+    }
+
+
+def _bracket_graph(size, ratios):
+    sx, sy, sz = (float(v) for v in size)
+    t = max(2.0, min(sx * 0.35, sz * 0.35, min(sx, sy, sz) * float(ratios.get("wall", 0.12))))
+    features = [
+        {"id": "base", "op": "box", "args": {
+            "size": [round(sx, 4), round(sy, 4), round(t, 4)],
+            "center": [0.0, 0.0, round(t * 0.5, 4)],
+        }},
+        {"id": "upright", "op": "box", "args": {
+            "size": [round(t, 4), round(sy, 4), round(sz, 4)],
+            "center": [round(-sx * 0.5 + t * 0.5, 4), 0.0, round(sz * 0.5, 4)],
+        }},
+        {"id": "l_body", "op": "union", "inputs": ["base", "upright"]},
+    ]
+    out = "l_body"
+    n_holes = int(max(0, min(4, round(float(ratios.get("hole_count", 2.0))))))
+    avail_x = sx - t
+    r_hole = max(1.5, min(avail_x * 0.22, sy * 0.18, min(sx, sy) * float(ratios.get("hole_d", 0.12)) * 0.5))
+    if n_holes > 0 and avail_x > r_hole * 3.0 and sy > r_hole * (2.2 * n_holes + 0.8):
+        hx = -sx * 0.5 + t + avail_x * 0.55
+        cuts = []
+        for i in range(n_holes):
+            hy = 0.0 if n_holes == 1 else (
+                -sy * 0.28 + (sy * 0.56) * i / (n_holes - 1))
+            hid = "hole_%d" % i
+            features.append({"id": hid, "op": "cylinder", "args": {
+                "radius": round(r_hole, 4),
+                "height": round(t * 3.0, 4),
+                "center": [round(hx, 4), round(hy, 4), round(t * 0.5, 4)],
+                "segments": 24,
+            }})
+            cuts.append(hid)
+        features.append({"id": "body", "op": "difference",
+                         "inputs": [out] + cuts})
+        out = "body"
+        genus = n_holes
+    else:
+        genus = 0
+    return {
+        "kind": "graph", "features": features, "output": out,
+        "size_mm": [sx, sy, sz],
+        "constraints": {"genus": genus, "n_components": 1, "min_wall_mm": t * 0.7},
+    }
+
+
+def _enclosure_graph(size, ratios):
+    sx, sy, sz = (float(v) for v in size)
+    wall = min(max(1.5, min(size) * float(ratios.get("wall", 0.045))), min(size) * 0.25)
+    if sx <= 2.2 * wall or sy <= 2.2 * wall or sz <= 1.5 * wall:
+        raise AttaError("infeasible_shell", "wall budget would close enclosure cavity",
+                        path="size_mm", fix="increase enclosure dimensions or reduce wall")
+    features = [
+        {"id": "outer", "op": "box", "args": {
+            "size": [round(sx, 4), round(sy, 4), round(sz, 4)],
+            "center": [0.0, 0.0, round(sz * 0.5, 4)],
+        }},
+        {"id": "cavity", "op": "box", "args": {
+            "size": [round(sx - 2.0 * wall, 4), round(sy - 2.0 * wall, 4), round(sz * 1.2, 4)],
+            "center": [0.0, 0.0, round(wall + sz * 0.6, 4)],
+        }},
+        {"id": "body", "op": "difference", "inputs": ["outer", "cavity"]},
+    ]
+    return {
+        "kind": "graph", "features": features, "output": "body",
+        "size_mm": [sx, sy, sz], "nominal_wall_mm": wall,
+        "constraints": {"genus": 0, "n_components": 1, "min_wall_mm": wall * 0.75},
+    }
+
+
+def _gear_graph(size, ratios):
+    sx, sy, sz = (float(v) for v in size)
+    r_tip = 0.5 * min(sx, sy)
+    n_teeth = int(max(6, min(48, round(float(ratios.get("tooth_count", 16.0))))))
+    addendum = r_tip * min(0.16, max(0.04, float(ratios.get("addendum", 0.08))))
+    r_root = max(r_tip * 0.55, r_tip - 2.2 * addendum)
+    r_bore = max(1.5, min(r_root * 0.65, r_root * float(ratios.get("bore", 0.24))))
+    pts = []
+    step = 2.0 * math.pi / n_teeth
+    for i in range(n_teeth):
+        a0 = i * step
+        for frac, rad in ((-0.30, r_root), (-0.10, r_tip), (0.10, r_tip), (0.30, r_root)):
+            ang = a0 + frac * step
+            pts.append([round(rad * math.cos(ang), 6), round(rad * math.sin(ang), 6)])
+    features = [
+        {"id": "gear_blank", "op": "extrude", "args": {
+            "loop_xy": pts,
+            "height": round(sz, 4),
+            "holes_xy": [_circle_loop(r_bore, n=36)],
+        }},
+    ]
+    out = "gear_blank"
+    if abs(sx - sy) > 1e-3:
+        features.append({"id": "body", "op": "transform", "inputs": [out],
+                         "args": {"scale": [sx / (2.0 * r_tip), sy / (2.0 * r_tip), 1.0]}})
+        out = "body"
+    return {
+        "kind": "graph", "features": features, "output": out,
+        "size_mm": [sx, sy, sz],
+        "constraints": {"genus": 1, "n_components": 1},
+    }
+
+
+def _tube_graph(size, ratios):
+    sx, sy, sz = (float(v) for v in size)
+    r_out = 0.5 * min(sx, sy)
+    wall = min(max(0.8, min(size) * float(ratios.get("wall", 0.14))), r_out * 0.45)
+    r_in = r_out - wall
+    if r_in <= 0.5:
+        raise AttaError("infeasible_shell", "wall exceeds tube radius",
+                        path="size_mm", fix="increase outer diameter or reduce wall")
+    features = [
+        {"id": "pipe", "op": "extrude", "args": {
+            "loop_xy": _circle_loop(r_out, n=64),
+            "height": round(sz, 4),
+            "holes_xy": [_circle_loop(r_in, n=48)],
+        }},
+    ]
+    out = "pipe"
+    if abs(sx - sy) > 1e-3:
+        features.append({"id": "body", "op": "transform", "inputs": [out],
+                         "args": {"scale": [sx / (2.0 * r_out), sy / (2.0 * r_out), 1.0]}})
+        out = "body"
+    return {
+        "kind": "graph", "features": features, "output": out,
+        "size_mm": [sx, sy, sz], "nominal_wall_mm": wall,
+        "constraints": {"genus": 1, "n_components": 1, "min_wall_mm": wall * 0.75},
+    }
+
+
+def _heatsink_graph(size, ratios):
+    sx, sy, sz = (float(v) for v in size)
+    base_h = max(2.0, min(sz * 0.45, sz * float(ratios.get("base", 0.24))))
+    n_fins = int(max(2, min(18, round(float(ratios.get("fin_count", 7.0))))))
+    fin_t = max(1.2, min(sx / (2.2 * n_fins), sx * float(ratios.get("fin_thickness", 0.045))))
+    fin_h = max(2.0, sz - base_h * 0.85)
+    span = max(0.0, sx - fin_t)
+    spacing = span / max(1, n_fins - 1) if n_fins > 1 else 0.0
+    fin_x0 = -0.5 * span if n_fins > 1 else 0.0
+    features = [
+        {"id": "base", "op": "box", "args": {
+            "size": [round(sx, 4), round(sy, 4), round(base_h, 4)],
+            "center": [0.0, 0.0, round(base_h * 0.5, 4)],
+        }},
+        {"id": "fin", "op": "box", "args": {
+            "size": [round(fin_t, 4), round(sy, 4), round(fin_h, 4)],
+            "center": [round(fin_x0, 4), 0.0, round(sz - fin_h * 0.5, 4)],
+        }},
+    ]
+    fin_node = "fin"
+    if n_fins > 1:
+        features.append({"id": "fins", "op": "pattern_linear", "inputs": ["fin"], "args": {
+            "count": n_fins, "spacing": round(spacing, 4), "axis": "x",
+        }})
+        fin_node = "fins"
+    features.append({"id": "body", "op": "union", "inputs": ["base", fin_node]})
+    return {
+        "kind": "graph", "features": features, "output": "body",
+        "size_mm": [sx, sy, sz],
+        "constraints": {"genus": 0, "n_components": 1},
+    }
+
+
+def _lamp_graph(size, ratios):
+    sx, sy, sz = (float(v) for v in size)
+    r_max = 0.5 * min(sx, sy)
+    base_h = max(4.0, sz * min(0.20, max(0.05, float(ratios.get("base_h", 0.08)))))
+    shade_h = max(10.0, sz * min(0.50, max(0.20, float(ratios.get("shade_h", 0.36)))))
+    stem_h = max(10.0, sz - base_h - shade_h * 0.75)
+    r_base = r_max * 0.80
+    r_stem = max(3.0, r_max * min(0.18, max(0.05, float(ratios.get("stem_r", 0.06)))))
+    features = [
+        {"id": "base", "op": "cylinder", "args": {
+            "radius": round(r_base, 4), "height": round(base_h, 4),
+            "center": [0.0, 0.0, round(base_h * 0.5, 4)], "segments": 40,
+        }},
+        {"id": "stem", "op": "cylinder", "args": {
+            "radius": round(r_stem, 4), "height": round(stem_h + base_h * 0.5, 4),
+            "center": [0.0, 0.0, round(base_h * 0.5 + (stem_h + base_h * 0.5) * 0.5, 4)],
+            "segments": 28,
+        }},
+        {"id": "shade", "op": "cone", "args": {
+            "r_bottom": round(r_max, 4), "r_top": round(r_max * 0.52, 4),
+            "height": round(shade_h, 4),
+            "center": [0.0, 0.0, round(sz - shade_h * 0.5, 4)],
+            "segments": 40,
+        }},
+        {"id": "lamp_solid", "op": "union", "inputs": ["base", "stem", "shade"]},
+    ]
+    out = "lamp_solid"
+    if abs(sx - sy) > 1e-3:
+        features.append({"id": "body", "op": "transform", "inputs": [out],
+                         "args": {"scale": [sx / (2.0 * r_max), sy / (2.0 * r_max), 1.0]}})
+        out = "body"
+    return {
+        "kind": "graph", "features": features, "output": out,
+        "size_mm": [sx, sy, sz],
+        "constraints": {"genus": 0, "n_components": 1},
+    }
+
+
+# ---------------------------------------------------------------- prompt NLP
+
+_STYLE_KEYWORDS = (
+    ("ancient", ("ancient", "medieval", "antique", "classical", "roman", "viking")),
+    ("brutal", ("brutal", "brutalist", "heavy-duty", "heavy duty", "rugged", "massive")),
+    ("elegant", ("elegant", "sleek", "slender", "minimalist", "graceful")),
+    ("organic", ("organic", "flowing", "biomimetic")),
+    ("industrial", ("industrial", "machined", "cnc")),
+    ("scifi", ("scifi", "sci-fi", "futuristic", "cyber")),
+    ("fantasy", ("fantasy", "ornate", "elven")),
+)
+
+_HEDGE_RE = r"(?:around|roughly|approx(?:imately)?|about|~)\s*"
+_MM_3D_RE = re.compile(
+    r"(?P<hedge>" + _HEDGE_RE + r")?"
+    r"(?P<x>\d+(?:\.\d+)?)\s*(?:mm\s*)?(?:x|×|\*|by)\s*"
+    r"(?P<y>\d+(?:\.\d+)?)\s*(?:mm\s*)?(?:x|×|\*|by)\s*"
+    r"(?P<z>\d+(?:\.\d+)?)\s*mm\b",
+    re.IGNORECASE,
+)
+
+
+def _detect_material(text: str) -> str | None:
+    try:
+        from . import materials as _materials
+        names = set(_materials.names())
+    except Exception:
+        names = {"ceramic", "porcelain", "quartz", "glass", "steel", "stainless",
+                 "aluminum", "aluminium", "brass", "copper", "gold", "plastic",
+                 "abs", "nylon", "wood"}
+    aliases = {
+        "abs plastic": "abs",
+        "stainless steel": "stainless",
+        "brushed steel": "brushed_steel",
+        "wooden": "wood",
+    }
+    best_mat, best_len = None, 0
+    for phrase, target in aliases.items():
+        if _word_in_text(phrase, text) and target in names and len(phrase) > best_len:
+            best_mat, best_len = target, len(phrase)
+    for m in names:
+        token = m.replace("_", " ")
+        if _word_in_text(token, text) and len(token) > best_len:
+            best_mat, best_len = m, len(token)
+    return best_mat
+
+
+def _parse_prompt_specs(prompt: str) -> dict:
+    """Extract style, material, dimensions, counts, and design intents from text."""
+    text = str(prompt or "").strip()
+    low = text.lower()
+
+    detected_style = "neutral"
+    for sname, kws in _STYLE_KEYWORDS:
+        if any(_word_in_text(kw, low) for kw in kws):
+            detected_style = sname
+            break
+
+    material = _detect_material(low)
+
+    wall_mm = None
+    m_wall = re.search(
+        r"(?:min(?:imum)?\s+)?wall(?:\s+thickness)?\s*(?:of|=|:|>=|at\s+least)?\s*(\d+(?:\.\d+)?)\s*mm\b",
+        low,
+    )
+    if m_wall:
+        wall_mm = float(m_wall.group(1))
+
+    hole_count = None
+    m_holes = re.search(r"\b(\d+)\s*(?:bolt\s+|mounting\s+|through[- ]?)?holes?\b", low)
+    if m_holes:
+        hole_count = int(m_holes.group(1))
+
+    tooth_count = None
+    m_teeth = re.search(r"\b(\d+)\s*teeth\b", low)
+    if m_teeth:
+        tooth_count = int(m_teeth.group(1))
+
+    fin_count = None
+    m_fins = re.search(r"\b(\d+)\s*(?:cooling\s+)?fins?\b", low)
+    if m_fins:
+        fin_count = int(m_fins.group(1))
+
+    aspect_ratio = None
+    m_asp = re.search(
+        r"(?:aspect(?:\s+ratio)?\s*(?:of|:)?\s*(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)"
+        r"|(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)\s*aspect(?:\s+ratio)?)",
+        low,
+    )
+    if m_asp:
+        if m_asp.group(1) and m_asp.group(2):
+            a, b = float(m_asp.group(1)), float(m_asp.group(2))
+        else:
+            a, b = float(m_asp.group(3)), float(m_asp.group(4))
+        if a > 0 and b > 0:
+            aspect_ratio = a / b
+
+    explicit_xyz = None
+    rough_xyz = None
+    m3 = _MM_3D_RE.search(low)
+    if m3:
+        vals = [float(m3.group("x")), float(m3.group("y")), float(m3.group("z"))]
+        if m3.group("hedge"):
+            rough_xyz = vals
+        else:
+            explicit_xyz = vals
+
+    # Named axis dimensions (exclude wall thickness match span).
+    cleaned = low
+    if m_wall:
+        cleaned = low[:m_wall.start()] + " " * (m_wall.end() - m_wall.start()) + low[m_wall.end():]
+
+    axis_patterns = {
+        "x": r"(?P<hedge>" + _HEDGE_RE + r")?(?:length|long)\s*(?:of|=|:)?\s*(?P<v>\d+(?:\.\d+)?)\s*mm\b",
+        "y": r"(?P<hedge>" + _HEDGE_RE + r")?(?:width|wide|depth|deep)\s*(?:of|=|:)?\s*(?P<v>\d+(?:\.\d+)?)\s*mm\b",
+        "z": r"(?P<hedge>" + _HEDGE_RE + r")?(?:height|tall|thickness|thick)\s*(?:of|=|:)?\s*(?P<v>\d+(?:\.\d+)?)\s*mm\b",
+        "d": r"(?P<hedge>" + _HEDGE_RE + r")?(?:outer\s+diameter|od|diameter)\s*(?:of|=|:)?\s*(?P<v>\d+(?:\.\d+)?)\s*mm\b",
+        "r": r"(?P<hedge>" + _HEDGE_RE + r")?radius\s*(?:of|=|:)?\s*(?P<v>\d+(?:\.\d+)?)\s*mm\b",
+    }
+    # Also support "<N> mm tall/wide/long/thick/diameter" trailing unit phrases.
+    trailing_patterns = {
+        "z": r"(?P<hedge>" + _HEDGE_RE + r")?(?P<v>\d+(?:\.\d+)?)\s*mm\s*(?:tall|high|thick)\b",
+        "x": r"(?P<hedge>" + _HEDGE_RE + r")?(?P<v>\d+(?:\.\d+)?)\s*mm\s*long\b",
+        "y": r"(?P<hedge>" + _HEDGE_RE + r")?(?P<v>\d+(?:\.\d+)?)\s*mm\s*(?:wide|deep)\b",
+        "d": r"(?P<hedge>" + _HEDGE_RE + r")?(?P<v>\d+(?:\.\d+)?)\s*mm\s*(?:in\s+)?diameter\b",
+    }
+    named = {}
+    hedged_any = False
+    for axis, pat in axis_patterns.items():
+        m = re.search(pat, cleaned)
+        if m:
+            named[axis] = float(m.group("v"))
+            if m.group("hedge"):
+                hedged_any = True
+    for axis, pat in trailing_patterns.items():
+        if axis not in named:
+            m = re.search(pat, cleaned)
+            if m:
+                named[axis] = float(m.group("v"))
+                if m.group("hedge"):
+                    hedged_any = True
+
+    if explicit_xyz is None and rough_xyz is None:
+        d_val = named.get("d")
+        if d_val is None and "r" in named:
+            d_val = 2.0 * named["r"]
+        if d_val is not None and "z" in named:
+            vals = [d_val, d_val, named["z"]]
+            if hedged_any:
+                rough_xyz = vals
+            else:
+                explicit_xyz = vals
+        elif "x" in named and "y" in named and "z" in named:
+            vals = [named["x"], named["y"], named["z"]]
+            if hedged_any:
+                rough_xyz = vals
+            else:
+                explicit_xyz = vals
+
+    max_bound = None
+    m_max = re.search(
+        r"(?:under|below|at\s+most|max(?:imum)?(?:\s+size)?)\s*(\d+(?:\.\d+)?)\s*mm\b",
+        low,
+    )
+    if m_max:
+        max_bound = float(m_max.group(1))
+
+    intents = []
+    for intent, kws in (
+        ("symmetric", ("symmetric", "symmetry", "bilateral", "radial")),
+        ("stable", ("stable", "upright", "flat base", "self-standing")),
+        ("hollow", ("hollow", "open top", "cavity", "wall")),
+        ("watertight", ("watertight", "closed", "manifold")),
+    ):
+        if any(_word_in_text(kw, low) for kw in kws):
+            intents.append(intent)
+
+    return {
+        "style": detected_style,
+        "material": material,
+        "explicit_xyz_mm": explicit_xyz,
+        "rough_xyz_mm": rough_xyz,
+        "partial_dims_mm": {k: v for k, v in named.items()} if (named and explicit_xyz is None and rough_xyz is None) else {},
+        "hedged": bool(hedged_any or (rough_xyz is not None)),
+        "wall_mm": wall_mm,
+        "hole_count": hole_count,
+        "tooth_count": tooth_count,
+        "fin_count": fin_count,
+        "aspect_ratio": aspect_ratio,
+        "max_bound_mm": max_bound,
+        "intents": intents,
+    }
+
+
+def conjure_from_prompt(
+    prompt: str,
+    *,
+    seed: int = 0,
+    style: str | None = None,
+    size_mm=None,
+    scale: float = 1.0,
+    constraints: dict | None = None,
+) -> dict:
+    """Parse a Text2CAD-style natural-language prompt and conjure a CAD plan.
+
+    Only explicit, unhedged 3D dimensions in the prompt become ``measured``;
+    rough, partial, or aspect-implied dimensions remain ``derived``, and
+    dimensionless prompts remain ``invented``.
+    """
+    parsed = _parse_prompt_specs(prompt)
+    use_style = style if style is not None else parsed["style"]
+    cons = dict(constraints or {})
+    if parsed["wall_mm"] is not None and cons.get("wall_mm") is None:
+        cons["wall_mm"] = parsed["wall_mm"]
+    if parsed["hole_count"] is not None and cons.get("hole_count") is None:
+        cons["hole_count"] = parsed["hole_count"]
+    if parsed["tooth_count"] is not None and cons.get("tooth_count") is None:
+        cons["tooth_count"] = parsed["tooth_count"]
+    if parsed["fin_count"] is not None and cons.get("fin_count") is None:
+        cons["fin_count"] = parsed["fin_count"]
+    if parsed["max_bound_mm"] is not None and cons.get("max_mm") is None:
+        b = float(parsed["max_bound_mm"])
+        cons["max_mm"] = [b, b, b]
+
+    key, arch, _ = archetype(prompt)
+    eff_size_mm = size_mm
+    eff_scale = float(scale)
+    derived_from_prompt = False
+
+    if eff_size_mm is None:
+        if parsed["explicit_xyz_mm"] is not None:
+            eff_size_mm = parsed["explicit_xyz_mm"]
+        elif parsed["rough_xyz_mm"] is not None:
+            eff_size_mm = parsed["rough_xyz_mm"]
+            derived_from_prompt = True
+        elif parsed["partial_dims_mm"]:
+            pd = parsed["partial_dims_mm"]
+            base = np.asarray(arch["size_mm"], dtype=np.float64)
+            if parsed["aspect_ratio"] is not None and float(parsed["aspect_ratio"]) >= 1.0:
+                ar = float(parsed["aspect_ratio"])
+                idx_max = int(np.argmax(base))
+                mid_val = float(sorted(base)[1])
+                base[idx_max] = round(mid_val * ar, 3)
+            ratios_scale = []
+            if "d" in pd:
+                ratios_scale.append(pd["d"] / max(0.5 * (base[0] + base[1]), 1e-6))
+            elif "r" in pd:
+                ratios_scale.append(2.0 * pd["r"] / max(0.5 * (base[0] + base[1]), 1e-6))
+            if "x" in pd:
+                ratios_scale.append(pd["x"] / max(base[0], 1e-6))
+            if "y" in pd:
+                ratios_scale.append(pd["y"] / max(base[1], 1e-6))
+            if "z" in pd:
+                ratios_scale.append(pd["z"] / max(base[2], 1e-6))
+            if parsed["aspect_ratio"] is not None:
+                sc = float(np.mean(ratios_scale)) if ratios_scale else 1.0
+                eff_size_mm = [round(float(v * sc), 3) for v in base]
+            elif ratios_scale:
+                eff_scale *= float(np.mean(ratios_scale))
+            derived_from_prompt = True
+        elif parsed["aspect_ratio"] is not None and scale == 1.0:
+            # Apply requested aspect ratio to longest vs second axis, marked derived.
+            base = list(arch["size_mm"])
+            ar = float(parsed["aspect_ratio"])
+            if ar >= 1.0:
+                base_ar = max(base) / max(sorted(base)[1], 1e-6)
+                idx_max = int(np.argmax(base))
+                base[idx_max] = round(base[idx_max] * (ar / max(base_ar, 1e-6)), 3)
+                eff_size_mm = base
+                derived_from_prompt = True
+
+    plan = conjure(
+        prompt,
+        seed=seed,
+        style=use_style,
+        size_mm=eff_size_mm,
+        scale=eff_scale,
+        constraints=cons or None,
+    )
+    if derived_from_prompt and size_mm is None:
+        plan["provenance"]["size_mm"] = "derived"
+        plan["provenance_detail"]["size_mm"]["source"] = "prompt_partial_or_rough"
+        plan["provenance_detail"]["size_mm"]["measured"] = False
+    plan["prompt"] = str(prompt)
+    plan["prompt_parsed"] = dict(parsed, archetype_key=key)
+    return plan
