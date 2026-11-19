@@ -3,6 +3,7 @@
 
     python3 -m atta.agent.install zcode            # merge into ~/.zcode/cli/config.json
     python3 -m atta.agent.install zcode --print    # show the atta entry only
+    python3 -m atta.agent.install antigravity --create  # install into ~/.gemini/config/plugins/atta
     python3 -m atta.agent.install dsh --create     # symlink the DSH plugin
     python3 -m atta.agent.install claude           # print Claude Desktop JSON
     python3 -m atta.agent.install cursor           # print Cursor JSON
@@ -28,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_DIR = ROOT / "plugin"
 DEFAULT_ZCODE_CONFIG = Path.home() / ".zcode" / "cli" / "config.json"
 DEFAULT_DSH_LINK = Path.home() / ".dsh" / "plugins" / "atta"
+DEFAULT_ANTIGRAVITY_DIR = Path.home() / ".gemini" / "config" / "plugins" / "atta"
 
 
 def _abs(value) -> str:
@@ -295,6 +297,158 @@ def install_dsh(link=None, source=None, create: bool = False,
 
 
 # --------------------------------------------------------------------------- #
+# Antigravity plugin
+# --------------------------------------------------------------------------- #
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name("%s.tmp-%d" % (path.name, os.getpid()))
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name("%s.tmp-%d" % (path.name, os.getpid()))
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def antigravity_mcp_config(root=None, python=None) -> dict:
+    """MCP server payload matching Antigravity's ``mcp_config.json`` schema."""
+    entry = mcp_entry(root=root, python=python)
+    return {
+        "mcpServers": {
+            "atta": {
+                "command": entry["command"],
+                "args": list(entry["args"]),
+                "env": dict(entry["env"]),
+            },
+        },
+    }
+
+
+def _sync_skill_dir(src_dir: Path, dst_dir: Path) -> list[str]:
+    """Copy ``src_dir`` into ``dst_dir`` and prune stale files inside ``dst_dir``."""
+    expected: set[Path] = set()
+    written: list[str] = []
+    for src in sorted(src_dir.rglob("*")):
+        if not src.is_file():
+            continue
+        rel = src.relative_to(src_dir)
+        dst = dst_dir / rel
+        expected.add(dst)
+        _atomic_write_bytes(dst, src.read_bytes())
+        written.append(str(dst))
+
+    if dst_dir.is_dir():
+        for existing in sorted(dst_dir.rglob("*"), reverse=True):
+            if existing.is_file() and existing not in expected:
+                existing.unlink()
+            elif existing.is_dir() and existing != dst_dir:
+                try:
+                    existing.rmdir()
+                except OSError:
+                    pass
+    return written
+
+
+def install_antigravity(target_dir=None, root=None, python=None,
+                        create: bool = False, dry_run: bool = False) -> dict:
+    """Write or preview the Antigravity plugin directory layout.
+
+    Populates ``plugin.json``, ``mcp_config.json``, ``assets/logo.svg``, and
+    ``skills/atta/`` without disturbing any existing ``_atta/`` workspace data.
+    """
+    root_dir = _abs(root or ROOT)
+    root_path = Path(root_dir)
+    target = Path(_abs(target_dir or DEFAULT_ANTIGRAVITY_DIR))
+
+    template_path = root_path / "plugins" / "antigravity" / "plugin.json"
+    if not template_path.is_file():
+        raise AttaError(
+            "bad_config",
+            "missing Antigravity plugin template: %s" % template_path,
+            path=str(template_path),
+            fix="restore plugins/antigravity/plugin.json or pass --root to a full checkout",
+        )
+    plugin_meta = load_config(template_path)
+
+    logo_src = root_path / "docs" / "assets" / "mark.svg"
+    if not logo_src.is_file():
+        raise AttaError(
+            "file_not_found",
+            "missing Atta logo asset: %s" % logo_src,
+            path=str(logo_src),
+            fix="restore docs/assets/mark.svg or pass --root to a full checkout",
+        )
+
+    skill_src = root_path / "plugin" / "skills" / "atta"
+    if not (skill_src / "SKILL.md").is_file():
+        raise AttaError(
+            "file_not_found",
+            "missing Atta skill directory: %s" % skill_src,
+            path=str(skill_src),
+            fix="restore plugin/skills/atta/SKILL.md or pass --root to a full checkout",
+        )
+
+    mcp_cfg = antigravity_mcp_config(root=root_dir, python=python)
+    plugin_dst = target / "plugin.json"
+    mcp_dst = target / "mcp_config.json"
+    logo_dst = target / "assets" / "logo.svg"
+    skill_dst = target / "skills" / "atta"
+
+    planned_files = [
+        str(plugin_dst),
+        str(mcp_dst),
+        str(logo_dst),
+        *[str(skill_dst / p.relative_to(skill_src))
+          for p in sorted(skill_src.rglob("*")) if p.is_file()],
+    ]
+
+    result = {
+        "ok": True,
+        "host": "antigravity",
+        "target_dir": str(target),
+        "plugin_json": str(plugin_dst),
+        "mcp_config": str(mcp_dst),
+        "logo": str(logo_dst),
+        "skill_dir": str(skill_dst),
+        "files": planned_files,
+        "written": False,
+        "created": False,
+        "dry_run": bool(dry_run),
+    }
+
+    if dry_run or not create:
+        result["plugin"] = plugin_meta
+        result["config"] = mcp_cfg
+        if not dry_run and not create:
+            result["note"] = ("pass --create to write Antigravity plugin files to %s"
+                              % target)
+        return result
+
+    _atomic_write_text(
+        plugin_dst,
+        json.dumps(plugin_meta, ensure_ascii=False, indent=2) + "\n",
+    )
+    _atomic_write_text(
+        mcp_dst,
+        json.dumps(mcp_cfg, ensure_ascii=False, indent=2) + "\n",
+    )
+    _atomic_write_bytes(logo_dst, logo_src.read_bytes())
+    synced_skills = _sync_skill_dir(skill_src, skill_dst)
+
+    result["files"] = [str(plugin_dst), str(mcp_dst), str(logo_dst), *synced_skills]
+    result["written"] = True
+    result["created"] = True
+    result["restart_required"] = True
+    result["note"] = "reload Antigravity plugins to pick up updated Atta MCP/skills"
+    return result
+
+
+# --------------------------------------------------------------------------- #
 # Claude / Cursor snippets
 # --------------------------------------------------------------------------- #
 
@@ -360,6 +514,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true",
                    help="replace an existing file/symlink")
 
+    p = sub.add_parser("antigravity",
+                       help="install or update the Antigravity plugin directory")
+    p.add_argument("--target", default=None,
+                   help="default: ~/.gemini/config/plugins/atta")
+    p.add_argument("--root", default=None, help="Atta repo root")
+    p.add_argument("--python", default=None, help="Python interpreter")
+    p.add_argument("--create", action="store_true",
+                   help="write plugin files into target directory")
+    p.add_argument("--print", action="store_true", dest="dry_run",
+                   help="print the resulting config without writing")
+
     for name in ("claude", "cursor"):
         p = sub.add_parser(name, help="print the %s MCP config snippet" % name)
         p.add_argument("--root", default=None)
@@ -380,6 +545,10 @@ def main(argv=None) -> int:
         elif args.cmd == "dsh":
             result = install_dsh(link=args.link, source=args.source,
                                  create=args.create, force=args.force)
+        elif args.cmd == "antigravity":
+            result = install_antigravity(target_dir=args.target, root=args.root,
+                                         python=args.python, create=args.create,
+                                         dry_run=args.dry_run)
         elif args.cmd == "claude":
             result = claude_config(root=args.root, python=args.python)
         else:

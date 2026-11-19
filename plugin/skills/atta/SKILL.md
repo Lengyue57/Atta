@@ -1,9 +1,9 @@
 ---
 name: atta
-description: Atta 1.2.2beta 参数化建模与交付：用 recipe 或 Spec v3（JSON）驱动 numpy/Blender 内核，做零件、回转体、曲面、装配、参数求解、结构测量、三态数值验收与 GLB/OBJ/STL/STEP 交付。适用于用户要求建 3D 模型、改尺寸、量壁厚/间隙/体积、批量比较方案、导出 CAD 文件，或需要"建完能证明它对"的场景。
+description: Atta 1.2.3beta 参数化建模与交付：用 recipe 或 Spec v3（JSON）驱动 numpy/Blender 内核，做零件、回转体、曲面、装配、参数求解、结构测量、三态数值验收与 GLB/OBJ/STL/STEP/DXF/SVG 交付。适用于用户要求建 3D 模型、改尺寸、量壁厚/间隙/体积、批量比较方案、导出 CAD/工程图文件，或需要"建完能证明它对"的场景。
 ---
 
-# Atta 1.2.2beta — 建模出好东西
+# Atta 1.2.3beta — 建模出好东西
 
 你的目标是做出**好看且可验证**的模型，不是跑通工具。本文件是唯一权威。
 细节按需读 `references/`（不要一开始全读）。
@@ -48,16 +48,15 @@ description: Atta 1.2.2beta 参数化建模与交付：用 recipe 或 Spec v3（
 让引擎按内置原型表 + 比例规则 + 种子发明一套可信参数与构建方案，再走
 `describe → verify`。不要上网搜不存在的规格；`seed` 固定则结果可复现。
 
-## 1.2.2beta 新内核能力
+## 1.2.3beta 新内核能力（46 个 recipe · 56+ op · 53 种材质 · 12 个工具）
 
-先查 `atta_catalog(feature=...)`：`nurbs_surface` 提供有界采样的有理曲面，
-`fillet/chamfer` 在支持的闭包内走同源精确 CAD，`field_tree` 组合有界场。
-定向端口与 `attach` 负责装配初始位姿，最终 DOF/干涉仍由 mates 与 verify 检查。
-曲面未达采样容差的警告会跨布尔和装配保留，不能把拓扑 pass 当作精度证明。
-生物形态 op（`capsid`、`diatom_frustule`、`pyramidal_neuron` 等）仍是可测量、可验收的
-几何构造，不是生物仿真。相机、贴图与外观由独立的 basid 程序负责，可用 `atta.look` 桥接。
-混合装配 STEP 只含 exact graph 零件，mesh-only 明确 omitted，交付为 partial；
-GLB 可含全部零件。不要把部分 STEP 称为完整装配，也不要把采样误差称为全域界。
+先查 `atta_catalog(feature=...)`：
+- **精确 CAD 与草图**：`extrude` / `revolve` 支持声明式 2D `segments`（`line` / `arc` / `tangent_arc` / `circle`，其中圆弧在 B-rep/STEP 保持真圆弧边）；primitives / `extrude` / `revolve` 支持 KCL 风格面 `tags`；`fillet`/`chamfer` 支持 `common_edge_of` / `on_face` / `from_feature` 拓扑选边（免数字索引）。
+- **曲面、有界场与语法**：`nurbs_surface` 提供有界采样有理曲面，`field_tree` 组合有界场；新增 `shape_grammar`、`lsystem`、`hull`、`minkowski`、`polyhedron`、`heightmap`、`deform`、`morph`、`projection_extrude` 以及生物形态 op（`capsid`、`diatom_frustule`、`pyramidal_neuron` 等，仍是几何构造而非生物仿真）。
+- **几何计量与 3D 对比**：`metrology` 新增 `self_intersection`（SIR）、`dangling_edge_length_mm`（DangEL）与 `flux_enclosure_error`（FluxEE）；`describe(compare_to=...)` 在 2D 轮廓 IoU 之外新增 3D 指标（`chamfer_mm`、`hausdorff_p95_mm`、`volumetric_iou`）；`verify` 支持 `constraints.mesh_agreement` 与目标模型比对。
+- **局部增量编辑（locate-then-infill）**：`atta_spec(op="patch"|"preflight")` 与 `atta_model(patches=...)` 支持对 `graph`（`features` 节点增删改/`params`）和 `assembly`（`parts`）做局部 patch；`_clean_args` 丢弃未知键时会在回执 `warnings` 中显式报告。
+- **2D 工程图交付**：`atta_deliver(formats=["dxf","svg_drawing"])` 导出带 `VISIBLE`/`HIDDEN`/`CENTER`/`ANNOTATION` 图层的 DXF 与带标题栏/总尺寸的 3+1 视图 SVG 工程图（B-rep 支持时走 OCCT HLR，否则自动回退 `mesh_hlr` 并如实标注 `backend`）。
+- **装配与外观**：定向端口与 `attach` 负责装配初始位姿，最终 DOF/干涉仍由 mates 与 verify 检查。相机、贴图与外观由独立的 basid 程序负责，可用 `atta.look` 桥接。混合装配 STEP 只含 exact graph 零件，mesh-only 明确 omitted，交付为 partial；GLB 可含全部零件。不要把部分 STEP 称为完整装配，也不要把采样误差称为全域界。
 
 ## 主循环（必须照这个顺序）
 
@@ -89,8 +88,8 @@ atta_deliver(formats=["glb","obj"])            # 内部再 verify 一次
 {"recipe": "product.mug", "patches": {"height": 120, "wall": 3.2}}
 ```
 
-不要重发整个 spec 只改一个数——用 `patches` 做增量，这样 `trace` 和
-`applied_patches` 能看出你改了什么。
+不要重发整个 spec 只改一个数——用 `patches` 做增量（recipe 参数和 graph/assembly 节点均支持），这样 `trace` 和
+`applied_patches` 能看出你改了什么；提交前可先用 `atta_spec(op="preflight")` 做静态检查。
 
 ### ⚠ 参数越界会被静默 clamp
 
@@ -118,7 +117,7 @@ closed/genus/凸度/对称/孔估计/dihedral）、`views`（front/top/right ASC
 
 迭代对比：`describe(model_id=<new>, compare_to=<old>, views=["front","top"])`
 → `diff.views[*].iou` + ASCII `+/-/#`，外加 `volume_delta_mm3` / `bbox_delta_mm` /
-`topology_before,after`。**IoU 实测**（mug，front，基线 95）：+1 mm→0.989；
+`topology_before,after` 与 `metrics_3d`（`chamfer_mm`、`hausdorff_p95_mm`、`volumetric_iou`）。**IoU 实测**（mug，front，基线 95）：+1 mm→0.989；
 +5 mm→0.964；+15 mm→0.835；+35 mm→0.715。即 **>0.98 几乎没动，0.93–0.98 微调，
 <0.90 明显形变**。别只看体积——配合 `topology_before/after` 看 genus/components。
 
@@ -173,7 +172,7 @@ closed/genus/凸度/对称/孔估计/dihedral）、`views`（front/top/right ASC
 
 ### 材质
 
-`atta_catalog` 默认给的 `materials` 是 `name -> label`（47 种，`verbose` 才有 PBR）。
+`atta_catalog` 默认给的 `materials` 是 `name -> label`（53 种，`verbose` 才有 PBR）。
 选材：杯碗 `ceramic`/`porcelain`；机加工 `aluminium`/`brass`；结构 `steel`/`stainless`；
 打印 `abs`/`nylon`/`resin`；透明 `glass_clear`；木 `wood`。
 **不要编材质名**——未知材质报 `bad_arguments`，`message` 会列出全部合法名。
@@ -222,8 +221,8 @@ receipt 关键字段：`verdict`、`pass`、`score`、`level`、`checks[]`、`is
 
 `atta_design` 与 `atta_verify` 是两把不同的尺子：verify 只判"是不是合法实体"，
 design 判"形体读不读得懂、能不能造"——轮廓可读性（缩小后还认不认得出）、负空间、
-形体三级层次、比例、对称、可打印性（最小壁厚/悬垂）、可脱模（拔模角）、
-可加工（内角半径）。每条返回 `ok/value/advice`，`ok=null` 表示不适用。
+形体三级层次、比例、对称、稳定性（质心 XY 投影相对底面支撑凸包 `stability`）、
+可打印性（最小壁厚/悬垂）、可脱模（拔模角）、可加工（内角半径）。每条返回 `ok/value/advice`，`ok=null` 表示不适用。
 
 **模型可以 verify=pass 却在 design 失败**，这正是它存在的意义。造型件在 deliver
 前至少跑 `rules=["proportion","printability"]`；要注塑/CNC 时再加
@@ -232,7 +231,7 @@ design 判"形体读不读得懂、能不能造"——轮廓可读性（缩小�
 ## 交付
 
 `atta_deliver` **先在内部跑 standard verify**：`fail` 直接 block，`degraded` 需
-显式 `allow_degraded=true`。产物：GLB / OBJ / STL / BLEND + `<name>_manifest.json`
+显式 `allow_degraded=true`。产物：GLB / OBJ / STL / BLEND / DXF / SVG 工程图 + `<name>_manifest.json`
 （含 sha256 和 verify receipt）。图形子集支持 `formats=["step"]` 出解析 B-rep；
 不支持的 op 报 `brep_unsupported` 并给 fix，**不会**伪造一个三角化 STEP。
 
@@ -245,8 +244,8 @@ GLB/OBJ 是三角化派生物。几何真值由 spec + measured facts 保证，�
 | `catalog` 看不到某 recipe | 默认一页 14 条 | `offset=<next_offset>` 翻页，或 `catalog(recipe="<id>")` |
 | context 爆掉 | 调了 `catalog(verbose=true)` | 用 `recipe=` / `feature=` 精确取（verbose ≈180 KB） |
 | `atta_model needs recipe or spec` | 只传了 `patches` | 补上 `recipe=` 或 `spec=` |
-| `bad_arguments`（其它） | 字段名/类型/枚举错 | 查 `atta_catalog`；`_clean_args` **静默丢弃** schema 外的键，故"传了没生效"多是名字错 |
-| 参数传了但几何没变 | 越界被 clamp / 未知名被忽略 | 读 `applied_patches` 与 `issues[]`；`unknown_param.fix` 列出全部合法参数名 |
+| `bad_arguments`（其它） | 字段名/类型/枚举错 | 查 `atta_catalog`；`_clean_args` 丢弃 schema 外的键时会写入回执 `warnings` |
+| 参数传了但几何没变 | 越界被 clamp / 未知名被忽略 | 读 `applied_patches`、`warnings` 与 `issues[]`；`unknown_param.fix` 列出全部合法参数名 |
 | `degraded` | warn 级没过（壁厚等） | 加厚/改参；或 `level="strict"` 复验确认；确可接受才 `allow_degraded=true` |
 | `fail` | error 级没过 | 读 `issues[].fix`，改参数后重新 verify |
 | `recipe_blocked` | 违反 recipe 内部约束 | 读 `error.details[].fix`，多为 `wall <= min(base_radius,top_radius)*0.22` 之类关系式 |
@@ -255,8 +254,7 @@ GLB/OBJ 是三角化派生物。几何真值由 spec + measured facts 保证，�
 | `timeout` / `lock_timeout` | 活太久 / 同 workspace 占锁 | 拆步或提高 timeout；等待，或换 `ATTA_HOME` |
 
 完整错误码与逐步排查见 `references/troubleshooting.md`。
-注意：`verify` 个别 fix 文案提到 `atta_solve`——**没有这个工具**，对应能力是
-`atta_variant`（带 `targets`）。
+注：参数反求工具名为 `atta_variant`（带 `targets`），`v1.2.3beta` 已将 `verify` 的 fix 文案统一为 `atta_variant`（旧版曾写作 `atta_solve`）。
 
 ## 长任务与红线
 

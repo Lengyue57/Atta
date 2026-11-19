@@ -1,0 +1,16 @@
+{
+  "name": "atta",
+  "displayName": "Atta",
+  "version": "1.2.3-beta.1",
+  "description": "Atta v1.2.3-beta.1 — LLM-native parametric CAD modeling: exact CAD, sampled NURBS, bounded fields, modular assemblies, bio morphology, 2D DXF/SVG drawings, measured facts, three-state verify, and GLB/OBJ/STL/STEP delivery.",
+  "logo": "assets/logo.svg",
+  "author": {
+    "name": "Atta"
+  },
+  "repository": "https://github.com/laszapens/Atta",
+  "suggestedPrompts": [
+    "Run atta_doctor and show me the available parametric CAD recipes",
+    "Design a parametric ceramic mug with 95mm height and 3.2mm wall, verify it, and export GLB",
+    "Create a mounting bracket with 4 M4 holes using a feature graph spec and verify its dimensions"
+  ]
+}

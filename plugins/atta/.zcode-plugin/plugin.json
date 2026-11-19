@@ -1,7 +1,7 @@
 {
   "name": "atta",
-  "version": "1.2.2-beta.3",
-  "description": "Atta v1.2.2-beta.3 — LLM-native parametric modeling: exact CAD, sampled NURBS, bounded fields, modular assemblies, bio morphology, measured facts, three-state verify, and GLB/OBJ/STL/STEP delivery. Look work is provided by the separate basid program.",
+  "version": "1.2.3-beta.1",
+  "description": "Atta v1.2.3-beta.1 — LLM-native parametric modeling: exact CAD, sampled NURBS, bounded fields, modular assemblies, bio morphology, 2D DXF/SVG drawings, measured facts, three-state verify, and GLB/OBJ/STL/STEP delivery. Look work is provided by the separate basid program.",
   "author": {
     "name": "Atta"
   },

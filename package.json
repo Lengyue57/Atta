@@ -1,7 +1,7 @@
 {
   "name": "@atta/dsh-atta",
-  "version": "1.2.2-beta.3",
-  "description": "Atta v1.2.2-beta.3 — DSH headless modeling plugin: recipes / Spec v3 / assemblies -> numpy + Blender -> measured facts -> three-state verify -> GLB/OBJ/STL/BLEND (+STEP subset). Twelve geometry tools, no GUI.",
+  "version": "1.2.3-beta.1",
+  "description": "Atta v1.2.3-beta.1 — DSH headless modeling plugin: recipes / Spec v3 / assemblies -> numpy + Blender -> measured facts -> three-state verify -> GLB/OBJ/STL/BLEND (+STEP/DXF/SVG). Twelve geometry tools, no GUI.",
   "//why": "Repository-root install shim, NOT the plugin package. The plugin lives in plugin/ (that manifest owns lib, skills and the bundle patch). DSH's plugin manager installs a git URL and then requires the INSTALLED package to declare dsh.bundle; a repo root without package.json installs as a placeholder (@laszapens/atta@0.0.0) and is refused with 'not-a-bundle' — '这个包没有声明组合包，不能作为插件管理'. This shim names the same package and points dsh.bundle/main at plugin/, so `dsh plugin add https://github.com/laszapens/Atta.git` works on the plain repo URL. Keep name/version in sync with plugin/package.json; plugin/test/smoke.mjs asserts it.",
   "//private": "true so only plugin/ is ever published to npm (npm publish from the repo root must not push a second copy of the same name@version). Git installs still work: private only blocks publishing.",
   "private": true,

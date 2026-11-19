@@ -7,8 +7,8 @@
 
 | code | 含义 | 可执行修法 |
 |---|---|---|
-| `unknown_tool` | 工具名拼错 | 用十动词之一 |
-| `bad_arguments` | 参数名/类型/枚举错 | 查 `atta_catalog` schema。**注意：`_clean_args` 会静默丢弃 schema 外的键**，所以"传了没反应"通常是键名错 |
+| `unknown_tool` | 工具名拼错 | 用十二个 `atta_*` 工具之一 |
+| `bad_arguments` | 参数名/类型/枚举错 | 查 `atta_catalog` schema；`_clean_args` 丢弃 schema 外的键时会在回执 `warnings` 列出被忽略字段 |
 | `engine_unavailable` | `atta.engine` 无法导入 | `atta_doctor`；`pip install -e ".[all]"` |
 | `no_models` | 工作区没有模型记录 | 先 `atta_model`，或传有效 `model_id` |
 | `bad_record` | 记录里没有可重建的 spec | 重新 `atta_model`（记录存 spec，不存网格） |
@@ -81,8 +81,7 @@ ASCII `+/-/#`：`#` 两者都有，`+` 新增，`-` 移除。
 `closed` / `genus` / `components`。用它定位"是哪一步把形状带偏了"——
 比反复 compare_to 更快。
 
-## 已知文案问题
+## 已知文案说明
 
-`verify` 某些 `fix` 里写 `use atta_solve`——**没有这个工具**。
-对应能力是 `atta_variant`（带 `targets` 参数）。
-遇到这类 fix，把它翻译成 `atta_variant(targets={...})` 再执行。
+早期版本 `verify` 某些 `fix` 里曾写作 `use atta_solve`——实际工具名为 `atta_variant`（带 `targets` 参数），`v1.2.3beta` 已在 `verify` 中直接输出 `use atta_variant`。
+此外 `diff` 现已同步输出 `metrics_3d`（`chamfer_mm`、`hausdorff_p95_mm`、`volumetric_iou`），`metrology` 输出 `self_intersection`（SIR）、`dangling_edge_length_mm`（DangEL）与 `flux_enclosure_error`（FluxEE）。
