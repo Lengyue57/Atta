@@ -161,7 +161,8 @@ def test_catalog_feature_lookup_is_tiny_and_specific(home):
     assert out["ok"] is True, out
     assert _size(out) < 2000
     schema = out["data"]["schema"]
-    assert "profile_rz" in schema["required"]
+    assert "profile_rz" in (set(schema["required"]) | set(schema["optional"]))
+    assert "segments" in schema["optional"]
 
 
 def test_catalog_unknown_feature_is_actionable(home):

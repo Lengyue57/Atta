@@ -1687,6 +1687,11 @@ def verify(model_id: str | None = None, level: str = "standard",
                 p.kind == inspect.Parameter.VAR_KEYWORD
                 for p in sig.parameters.values()):
             verify_kwargs["reference_mesh"] = reference_mesh
+        if (source.get("evaluated") and ev is not mesh
+                and ("kernel_mesh" in sig.parameters or any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD
+                    for p in sig.parameters.values()))):
+            verify_kwargs["kernel_mesh"] = mesh
     except (TypeError, ValueError):
         pass
     receipt = verifymod.verify(ev, **verify_kwargs)
