@@ -1,40 +1,41 @@
 {
  "schema": "atta.license_report/v1",
- "generated": "2026-11-18T14:18:18Z",
- "total_records": 620,
- "accepted": 608,
- "substantive": 567,
+ "generated": "2026-11-19T02:49:12Z",
+ "total_records": 692,
+ "accepted": 680,
+ "substantive": 639,
  "reference_only": 41,
  "by_tier": {
-  "A": 426,
-  "B": 182,
+  "A": 463,
+  "B": 217,
   "C": 12
  },
  "by_tier_accepted_only": {
-  "A": 426,
-  "B": 182
+  "A": 463,
+  "B": 217
  },
  "by_spdx": {
-  "BSD-2-Clause": 247,
-  "Apache-2.0": 90,
+  "BSD-2-Clause": 248,
+  "Apache-2.0": 96,
   "CC-BY-SA-4.0": 63,
   "CC-BY-4.0": 63,
-  "MIT": 47,
-  "LGPL-2.1": 39,
-  "CC0-1.0": 36,
+  "MIT": 60,
+  "LGPL-2.1": 56,
+  "CC0-1.0": 50,
+  "LGPL-3.0": 20,
   "MPL-2.0": 13,
   "NOASSERTION": 7,
-  "LGPL-3.0": 4,
+  "GPL-3.0": 3,
   "BSD-3-Clause": 3,
   "0BSD": 3,
+  "Unlicense": 3,
   "GPL-2.0": 1,
   "CC-BY-NC-SA-4.0": 1,
   "CC-BY-NC-4.0": 1,
-  "GPL-3.0": 1,
   "AGPL-3.0": 1
  },
  "by_source_kind": {
-  "github": 463,
+  "github": 535,
   "printables": 139,
   "wikibooks": 11,
   "dataset_site": 3,
@@ -45,8 +46,8 @@
  },
  "tier_by_source_kind": {
   "github": {
-   "A": 400,
-   "B": 56,
+   "A": 437,
+   "B": 91,
    "C": 7
   },
   "dataset_site": {
