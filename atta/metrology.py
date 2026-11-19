@@ -363,6 +363,316 @@ def curvature(mesh: M.Mesh) -> dict:
     }
 
 
+# ---------------------------------------------------------------- enclosure & self-intersection
+
+def dangling_edge_length_mm(mesh: M.Mesh) -> float:
+    """Total length of boundary (single-face / open) edges in millimetres."""
+    v = np.asarray(mesh.verts, dtype=np.float64)
+    f = np.asarray(mesh.faces, dtype=np.int64)
+    if len(f) == 0:
+        return 0.0
+    reps, counts, _, _, _ = _edge_table(v, f)
+    open_edges = reps[counts == 1]
+    if len(open_edges) == 0:
+        return 0.0
+    lengths = np.linalg.norm(v[open_edges[:, 1]] - v[open_edges[:, 0]], axis=1)
+    return _display(float(lengths.sum()) * 1000.0, 6)
+
+
+def flux_enclosure_error(mesh: M.Mesh) -> float:
+    """Dimensionless Gauss-divergence surface enclosure residual.
+
+    Combines the vector surface closure residual
+    ``||sum(A_i * n_i)|| / sum(A_i)`` (nonzero for open shells and partially
+    flipped meshes) with the signed-volume orientation residual (2.0 for
+    globally inverted closed meshes).  Closed outward manifolds yield ~0.0.
+    """
+    v = np.asarray(mesh.verts, dtype=np.float64)
+    f = np.asarray(mesh.faces, dtype=np.int64)
+    if len(f) == 0:
+        return 0.0
+    a, b, c = _tri_arrays(v, f)
+    cross = 0.5 * np.cross(b - a, c - a)
+    areas = np.linalg.norm(cross, axis=1)
+    total_area = float(areas.sum())
+    if not np.isfinite(total_area) or total_area <= EPS:
+        return 0.0
+    vec_residual = float(np.linalg.norm(cross.sum(axis=0))) / total_area
+    signed_vol = _signed_volume(v, f)
+    abs_vol = abs(signed_vol)
+    orient_residual = (
+        abs(signed_vol - abs_vol) / max(abs_vol, EPS)
+        if signed_vol < 0.0 and abs_vol > EPS * (total_area ** 1.5)
+        else 0.0
+    )
+    return float(max(vec_residual, orient_residual))
+
+
+def _morton_3d(pts_norm: np.ndarray) -> np.ndarray:
+    """Quantise normalised [0, 1]^3 coordinates into 30-bit Morton codes."""
+    q = np.clip((pts_norm * 1023.0).astype(np.uint32), 0, 1023)
+
+    def _expand(x: np.ndarray) -> np.ndarray:
+        x = (x | (x << 16)) & np.uint32(0x030000FF)
+        x = (x | (x << 8)) & np.uint32(0x0300F00F)
+        x = (x | (x << 4)) & np.uint32(0x030C30C3)
+        x = (x | (x << 2)) & np.uint32(0x09249249)
+        return x
+
+    return _expand(q[:, 0]) | (_expand(q[:, 1]) << 1) | (_expand(q[:, 2]) << 2)
+
+
+def _coplanar_sat_vec(A0: np.ndarray, A1: np.ndarray, A2: np.ndarray,
+                      B0: np.ndarray, B1: np.ndarray, B2: np.ndarray,
+                      nA: np.ndarray, scale: np.ndarray) -> np.ndarray:
+    """Vectorised 2D Separating Axis Theorem for positive-area coplanar overlap."""
+    m = len(A0)
+    if m == 0:
+        return np.zeros(0, dtype=bool)
+    least = np.argmin(np.abs(nA), axis=1)
+    ref = np.zeros_like(nA)
+    ref[np.arange(m), least] = 1.0
+    u = np.cross(nA, ref)
+    un = np.linalg.norm(u, axis=1, keepdims=True)
+    u = np.divide(u, np.where(un > 0, un, 1.0))
+    w = np.cross(nA, u)
+
+    pa_3d = np.stack([A0, A1, A2], axis=1)
+    pb_3d = np.stack([B0, B1, B2], axis=1)
+    pa = np.stack([np.einsum("mij,mj->mi", pa_3d, u),
+                   np.einsum("mij,mj->mi", pa_3d, w)], axis=2)
+    pb = np.stack([np.einsum("mij,mj->mi", pb_3d, u),
+                   np.einsum("mij,mj->mi", pb_3d, w)], axis=2)
+
+    def _ensure_ccw(p: np.ndarray):
+        area2 = ((p[:, 1, 0] - p[:, 0, 0]) * (p[:, 2, 1] - p[:, 0, 1]) -
+                 (p[:, 1, 1] - p[:, 0, 1]) * (p[:, 2, 0] - p[:, 0, 0]))
+        flip = area2 < 0.0
+        if flip.any():
+            p = p.copy()
+            p[flip] = p[flip][:, [0, 2, 1], :]
+        return p, np.abs(area2) > 1e-24
+
+    pa, ok_a = _ensure_ccw(pa)
+    pb, ok_b = _ensure_ccw(pb)
+    eps2 = np.maximum(1e-20, 1e-8 * (scale ** 2))
+
+    def _separated(t_edge: np.ndarray, t_other: np.ndarray) -> np.ndarray:
+        sep_any = np.zeros(m, dtype=bool)
+        for e in range(3):
+            p0 = t_edge[:, e, :]
+            p1 = t_edge[:, (e + 1) % 3, :]
+            edge = p1 - p0
+            rel = t_other - p0[:, None, :]
+            cr = edge[:, None, 0] * rel[:, :, 1] - edge[:, None, 1] * rel[:, :, 0]
+            sep_any |= (cr <= eps2[:, None]).all(axis=1)
+        return sep_any
+
+    sep = _separated(pa, pb) | _separated(pb, pa)
+    return ok_a & ok_b & (~sep)
+
+
+def _tri_tri_intersect_batch(v: np.ndarray, f: np.ndarray,
+                             ca: np.ndarray, cb: np.ndarray) -> np.ndarray:
+    """Vectorised Moller/SAT triangle-triangle intersection for candidate pairs."""
+    if len(ca) == 0:
+        return np.zeros(0, dtype=bool)
+    A0, A1, A2 = v[f[ca, 0]], v[f[ca, 1]], v[f[ca, 2]]
+    B0, B1, B2 = v[f[cb, 0]], v[f[cb, 1]], v[f[cb, 2]]
+    nA = np.cross(A1 - A0, A2 - A0)
+    nB = np.cross(B1 - B0, B2 - B0)
+    lenA = np.linalg.norm(nA, axis=1)
+    lenB = np.linalg.norm(nB, axis=1)
+    hit = np.zeros(len(ca), dtype=bool)
+    valid = (lenA > 1e-24) & (lenB > 1e-24)
+    if not valid.any():
+        return hit
+
+    idx = np.where(valid)[0]
+    A0, A1, A2 = A0[idx], A1[idx], A2[idx]
+    B0, B1, B2 = B0[idx], B1[idx], B2[idx]
+    nA = nA[idx] / lenA[idx, None]
+    nB = nB[idx] / lenB[idx, None]
+    scale = np.maximum(np.sqrt(lenA[idx]), np.sqrt(lenB[idx]))
+    peps = np.maximum(1e-14, 1e-9 * scale)
+
+    db = np.stack([((B0 - A0) * nA).sum(1),
+                   ((B1 - A0) * nA).sum(1),
+                   ((B2 - A0) * nA).sum(1)], axis=1)
+    db[np.abs(db) <= peps[:, None]] = 0.0
+    one_side_b = (((db >= 0).all(1) & ((db > 0).sum(1) >= 2)) |
+                  ((db <= 0).all(1) & ((db < 0).sum(1) >= 2)))
+
+    da = np.stack([((A0 - B0) * nB).sum(1),
+                   ((A1 - B0) * nB).sum(1),
+                   ((A2 - B0) * nB).sum(1)], axis=1)
+    da[np.abs(da) <= peps[:, None]] = 0.0
+    one_side_a = (((da >= 0).all(1) & ((da > 0).sum(1) >= 2)) |
+                  ((da <= 0).all(1) & ((da < 0).sum(1) >= 2)))
+
+    keep = ~(one_side_a | one_side_b)
+    if not keep.any():
+        return hit
+
+    idx = idx[keep]
+    A0, A1, A2 = A0[keep], A1[keep], A2[keep]
+    B0, B1, B2 = B0[keep], B1[keep], B2[keep]
+    nA, nB = nA[keep], nB[keep]
+    da, db = da[keep], db[keep]
+    peps, scale = peps[keep], scale[keep]
+
+    cross_n = np.cross(nA, nB)
+    cross_len = np.linalg.norm(cross_n, axis=1)
+    coplanar = (cross_len <= 1e-6) & (np.abs(db).max(1) <= peps)
+    noncop = cross_len > 1e-6
+
+    if noncop.any():
+        i_nc = np.where(noncop)[0]
+        D = cross_n[i_nc] / cross_len[i_nc, None]
+
+        def _interval_on_line(P0, P1, P2, d):
+            P = np.stack([P0, P1, P2], axis=1)
+            proj = np.einsum("mij,mj->mi", P, D)
+            lo = np.full(len(P0), np.inf)
+            hi = np.full(len(P0), -np.inf)
+            for k in range(3):
+                on = d[:, k] == 0.0
+                lo = np.where(on, np.minimum(lo, proj[:, k]), lo)
+                hi = np.where(on, np.maximum(hi, proj[:, k]), hi)
+            for i0, i1 in ((0, 1), (1, 2), (2, 0)):
+                cr = (d[:, i0] * d[:, i1]) < 0.0
+                if cr.any():
+                    den = d[cr, i0] - d[cr, i1]
+                    t = d[cr, i0] / den
+                    pt = P[cr, i0] + t[:, None] * (P[cr, i1] - P[cr, i0])
+                    pv = (pt * D[cr]).sum(1)
+                    lo[cr] = np.minimum(lo[cr], pv)
+                    hi[cr] = np.maximum(hi[cr], pv)
+            return lo, hi
+
+        ta_lo, ta_hi = _interval_on_line(A0[i_nc], A1[i_nc], A2[i_nc], da[i_nc])
+        tb_lo, tb_hi = _interval_on_line(B0[i_nc], B1[i_nc], B2[i_nc], db[i_nc])
+        coord_max = np.maximum(
+            np.maximum(np.abs(A0[i_nc]).max(1), np.abs(A1[i_nc]).max(1)),
+            np.maximum(np.abs(B0[i_nc]).max(1), np.abs(B1[i_nc]).max(1)),
+        )
+        leps = np.maximum(1e-14, np.maximum(1e-8 * scale[i_nc], 5e-7 * coord_max))
+        hit[idx[i_nc]] = np.minimum(ta_hi, tb_hi) > np.maximum(ta_lo, tb_lo) + leps
+
+    if coplanar.any():
+        i_cp = np.where(coplanar)[0]
+        hit[idx[i_cp]] = _coplanar_sat_vec(
+            A0[i_cp], A1[i_cp], A2[i_cp],
+            B0[i_cp], B1[i_cp], B2[i_cp],
+            nA[i_cp], scale[i_cp],
+        )
+    return hit
+
+
+def self_intersection(mesh: M.Mesh, max_pairs: int = 200000) -> dict:
+    """Detect non-adjacent triangle-triangle self-intersections via Morton BVH."""
+    v = np.asarray(mesh.verts, dtype=np.float64)
+    f = np.asarray(mesh.faces, dtype=np.int64)
+    n = len(f)
+    max_pairs = max(0, int(max_pairs))
+    if n < 2 or len(v) == 0 or not np.isfinite(v).all():
+        return {
+            "intersecting_pairs": 0,
+            "checked_pairs": 0,
+            "self_intersection_ratio": 0.0,
+            "truncated": False,
+            "exact": True,
+        }
+
+    tris = v[f]
+    diag = float(np.linalg.norm(v.max(axis=0) - v.min(axis=0)))
+    eps = max(1e-14, diag * 1e-9)
+    tmin = tris.min(axis=1) - eps
+    tmax = tris.max(axis=1) + eps
+    cent = (tmin + tmax) * 0.5
+    cmin = cent.min(axis=0)
+    span = np.maximum(cent.max(axis=0) - cmin, 1e-12)
+    idx = np.argsort(_morton_3d((cent - cmin) / span), kind="stable")
+    tmin, tmax, f_ord = tmin[idx], tmax[idx], f[idx]
+
+    levels_min = [tmin]
+    levels_max = [tmax]
+    cur_min, cur_max = tmin, tmax
+    while len(cur_min) > 1:
+        mc = len(cur_min)
+        pairs = mc // 2
+        nxt_min = np.minimum(cur_min[:2 * pairs:2], cur_min[1:2 * pairs:2])
+        nxt_max = np.maximum(cur_max[:2 * pairs:2], cur_max[1:2 * pairs:2])
+        if mc % 2 == 1:
+            nxt_min = np.vstack([nxt_min, cur_min[-1:]])
+            nxt_max = np.vstack([nxt_max, cur_max[-1:]])
+        levels_min.append(nxt_min)
+        levels_max.append(nxt_max)
+        cur_min, cur_max = nxt_min, nxt_max
+
+    pa = np.array([0], dtype=np.int64)
+    pb = np.array([0], dtype=np.int64)
+    truncated = False
+    cap = max(2_000_000, max_pairs * 16)
+    for lvl in range(len(levels_min) - 1, 0, -1):
+        n_child = len(levels_min[lvl - 1])
+        cmin, cmax = levels_min[lvl - 1], levels_max[lvl - 1]
+        same = pa == pb
+        ps = pa[same]
+        c0, c1 = 2 * ps, 2 * ps + 1
+        has1 = c1 < n_child
+        same_a = np.concatenate([c0, c1[has1], c0[has1]])
+        same_b = np.concatenate([c0, c1[has1], c1[has1]])
+        pd_a, pd_b = pa[~same], pb[~same]
+        a0, a1 = 2 * pd_a, 2 * pd_a + 1
+        b0, b1 = 2 * pd_b, 2 * pd_b + 1
+        ha1, hb1 = a1 < n_child, b1 < n_child
+        ha1b1 = ha1 & hb1
+        diff_a = np.concatenate([a0, a0[hb1], a1[ha1], a1[ha1b1]])
+        diff_b = np.concatenate([b0, b1[hb1], b0[ha1], b1[ha1b1]])
+        pa_all = np.concatenate([same_a, diff_a])
+        pb_all = np.concatenate([same_b, diff_b])
+        ok = (
+            (cmax[pa_all, 0] >= cmin[pb_all, 0]) & (cmax[pb_all, 0] >= cmin[pa_all, 0]) &
+            (cmax[pa_all, 1] >= cmin[pb_all, 1]) & (cmax[pb_all, 1] >= cmin[pa_all, 1]) &
+            (cmax[pa_all, 2] >= cmin[pb_all, 2]) & (cmax[pb_all, 2] >= cmin[pa_all, 2])
+        )
+        pa, pb = pa_all[ok], pb_all[ok]
+        if len(pa) > cap:
+            pa, pb = pa[:cap], pb[:cap]
+            truncated = True
+
+    diff = pa < pb
+    pa, pb = pa[diff], pb[diff]
+    fa, fb = f_ord[pa], f_ord[pb]
+    a0, a1, a2 = fa[:, 0], fa[:, 1], fa[:, 2]
+    b0, b1, b2 = fb[:, 0], fb[:, 1], fb[:, 2]
+    adj = (
+        (a0 == b0) | (a0 == b1) | (a0 == b2) |
+        (a1 == b0) | (a1 == b1) | (a1 == b2) |
+        (a2 == b0) | (a2 == b1) | (a2 == b2)
+    )
+    ca, cb = idx[pa[~adj]], idx[pb[~adj]]
+    if len(ca) > max_pairs:
+        ca, cb = ca[:max_pairs], cb[:max_pairs]
+        truncated = True
+
+    hits = _tri_tri_intersect_batch(v, f, ca, cb)
+    n_inter = int(hits.sum())
+    if n_inter > 0:
+        bad_tris = np.unique(np.concatenate([ca[hits], cb[hits]]))
+        sir = round(float(len(bad_tris)) / float(n), 8)
+    else:
+        sir = 0.0
+    return {
+        "intersecting_pairs": n_inter,
+        "checked_pairs": int(len(ca)),
+        "self_intersection_ratio": sir,
+        "truncated": bool(truncated),
+        "exact": not bool(truncated),
+    }
+
+
 # ---------------------------------------------------------------- aggregate
 
 _dihedral_fn = dihedral
@@ -371,6 +681,7 @@ _curvature_fn = curvature
 
 def measure(mesh: M.Mesh, *, wall: bool = False, dihedral: bool = True,
             curvature: bool = False,
+            self_intersect: bool = True,
             density_kg_m3: float | None = None) -> dict:
     out = {
         "bbox_mm": bbox_mm(mesh),
@@ -378,9 +689,13 @@ def measure(mesh: M.Mesh, *, wall: bool = False, dihedral: bool = True,
         "area_mm2": area_mm2(mesh),
         "centroid_mm": centroid_mm(mesh),
         "topology": M.topology(mesh),
+        "dangling_edge_length_mm": dangling_edge_length_mm(mesh),
+        "flux_enclosure_error": flux_enclosure_error(mesh),
         "units": "mm",
         "exact": False,
     }
+    if self_intersect:
+        out["self_intersection"] = self_intersection(mesh)
     if density_kg_m3 is not None:
         out["mass"] = mass_properties(mesh, density_kg_m3)
     if wall:
@@ -394,4 +709,6 @@ def measure(mesh: M.Mesh, *, wall: bool = False, dihedral: bool = True,
 
 __all__ = ["bbox_mm", "volume_mm3", "area_mm2", "centroid_mm",
            "mass_properties", "wall_thickness", "concave_edge_count",
-           "dihedral", "curvature", "vertex_normals", "measure"]
+           "dihedral", "curvature", "vertex_normals",
+           "self_intersection", "dangling_edge_length_mm",
+           "flux_enclosure_error", "measure"]
