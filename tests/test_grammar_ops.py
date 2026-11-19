@@ -284,6 +284,8 @@ def test_expansion_instance_triangle_and_component_budgets():
      "bad_arg", "symmetry"),
     ({"startshape": "S", "rules": {"S": [{"weight": 0, "body": [{"shape": "box"}]}]}}, "bad_arg", "S"),
     ({"startshape": "S", "rules": {"S": [{"shape": "box"}]}, "unit": 0}, "bad_arg", "unit"),
+    ({"startshape": "S", "rules": {"S": [{"shape": "box"}]}, "start_transform": {"s": 1e9}},
+     "grammar_overflow", "start_transform"),
     ({"startshape": "R", "depth_policy": "prune", "max_depth": 40,
       "rules": {"R": [{"shape": "box"}, {"call": "R", "transform": {"s": 10.0}}]}}, "grammar_overflow", "rules.R"),
 ])
@@ -395,6 +397,8 @@ def test_tropism_bends_growth_downward():
     (dict(axiom="F(", rules={"F": "F"}, iterations=1), "bad_arg"),
     (dict(axiom="FfF", rules={"X": "X"}, iterations=1, max_components=1), "grammar_components"),
     (dict(axiom="A", rules={"A": '"FA'}, iterations=25, step=100, step_decay=10.0), "grammar_overflow"),
+    (dict(axiom="FF", rules={"X": "X"}, iterations=1, tropism={"vector": [1e200, 1e200, 0], "e": 0.2}), "bad_arg"),
+    (dict(axiom="FF", rules={"X": "X"}, iterations=1, tropism={"vector": [1, 0, 0], "e": 1e308}), "bad_arg"),
 ])
 def test_lsystem_budgets_and_bad_input_fail_closed(args, code):
     err = raises(code, lsys, **args)
@@ -413,5 +417,6 @@ def test_lsystem_leaf_count_and_move_symbols():
 def test_direct_builders_validate_units():
     raises("bad_arg", G.build_shape_grammar, {"startshape": "S", "rules": {"S": [{"shape": "box"}]}}, units="km")
     raises("bad_arg", G.build_lsystem, {"axiom": "F", "rules": {"F": "F"}, "iterations": 1}, units="km")
-    m = G.build_shape_grammar({"startshape": "S", "rules": {"S": [{"shape": "box"}]}, "unit": 5}, units="mm")
+    m = G.build_shape_grammar({"startshape": "S", "rules": {"S": [{"shape": "box", "transform": {"flip": 1e308}}]},
+                               "unit": 5}, units="mm")
     solid_ok(m, components=1, genus=0)

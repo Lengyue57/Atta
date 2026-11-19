@@ -103,7 +103,7 @@ def _max_components(args, path):
 # ------------------------------------------------------------------ matrices
 
 def _rot(axis, deg):
-    a = math.radians(deg)
+    a = math.radians(math.fmod(deg, 360.0))
     c, s = math.cos(a), math.sin(a)
     m = np.eye(4)
     i, j = {"x": (1, 2), "y": (2, 0), "z": (0, 1)}[axis]
@@ -123,7 +123,7 @@ def _scale(v):
 
 def _flip(deg):
     """Reflection across the line through the origin at ``deg`` in the xy-plane."""
-    a = math.radians(2.0 * deg)
+    a = math.radians(2.0 * math.fmod(deg, 180.0))
     m = np.eye(4)
     m[0, 0], m[0, 1], m[1, 0], m[1, 1] = math.cos(a), math.sin(a), math.sin(a), -math.cos(a)
     return m
@@ -609,13 +609,6 @@ def expand_shape_grammar(g):
     instances, seen = [], set()
     stats = {"expansions": 0, "pruned_scale": 0, "pruned_depth": 0, "depth_reached": 0,
              "duplicates": 0, "rule_counts": {}}
-    root_m = g["start_transform"].matrix(rng)
-    if not np.isfinite(root_m).all() or float(np.max(np.abs(root_m[:3, 3]))) > 1e6:
-        raise _err("grammar_overflow", "start_transform coordinates out of bounds",
-                   path + ".args.start_transform", "keep coordinates finite and <= 1e6")
-    stack = [(g["startshape"], root_m, 0, ())]
-    group = g["symmetry"]
-
     def check_matrix(w, where):
         if not np.isfinite(w).all() or float(np.max(np.abs(w[:3, 3]))) > 1e6 \
                 or float(np.max(np.abs(w[:3, 3]))) * g["unit_m"] > 1e6:
@@ -627,6 +620,11 @@ def expand_shape_grammar(g):
             raise _err("grammar_overflow", "transform scale diverged", where,
                        "keep recursive scale <= 1")
         return s_min
+
+    root_m = g["start_transform"].matrix(rng)
+    check_matrix(root_m, path + ".args.start_transform")
+    stack = [(g["startshape"], root_m, 0, ())]
+    group = g["symmetry"]
 
     def emit(name, m):
         for s in group:
@@ -956,9 +954,15 @@ def compile_lsystem(args, scale=1e-3, path="lsystem"):
         if not isinstance(vec, (list, tuple)) or len(vec) != 3:
             raise _err("bad_arg", "tropism.vector must be 3 numbers", a + "tropism.vector", "use [0, 0, -1]")
         v = np.array([_number(c, a + "tropism.vector[%d]" % i) for i, c in enumerate(vec)])
-        if np.linalg.norm(v) == 0:
-            raise _err("bad_arg", "tropism.vector must be non-zero", a + "tropism.vector", "use [0, 0, -1]")
-        out["tropism"] = (v, _number(trop.get("e", 0.2), a + "tropism.e"))
+        vnorm = math.hypot(float(v[0]), float(v[1]), float(v[2]))
+        if vnorm == 0 or not math.isfinite(vnorm) or vnorm > 1e6:
+            raise _err("bad_arg", "tropism.vector must be non-zero with norm <= 1e6",
+                       a + "tropism.vector", "use a unit vector such as [0, 0, -1]")
+        e = _number(trop.get("e", 0.2), a + "tropism.e")
+        if not math.isfinite(e * vnorm) or abs(e * vnorm) > 1e6:
+            raise _err("bad_arg", "tropism.e * |vector| is out of bounds",
+                       a + "tropism.e", "use a small susceptibility e such as 0.2")
+        out["tropism"] = (v, e)
     leaf = args.get("leaf")
     out["leaf"] = None
     if leaf is not None:
@@ -1027,7 +1031,7 @@ def expand_lsystem(g):
 
 
 def _rotate(v, axis, deg):
-    a = math.radians(deg)
+    a = math.radians(math.fmod(deg, 360.0))
     return v * math.cos(a) + np.cross(axis, v) * math.sin(a) + axis * float(np.dot(axis, v)) * (1 - math.cos(a))
 
 
