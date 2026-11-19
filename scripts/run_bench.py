@@ -2008,6 +2008,8 @@ def main(argv=None):
                "protocol": protocol_doc(len(cases)), "cases": cases}
     else:
         doc = json.load(open(args.cases, encoding="utf-8"))
+        if doc.get("bench"):
+            BENCH_VERSION = doc["bench"]
         freeze = check_freeze(doc)
         rows = load_corpus()
         state = corpus_state(rows)
