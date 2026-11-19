@@ -168,10 +168,16 @@ def test_iso286_lookup_and_fit_pair_variants():
     assert e9["min_clearance_um"] == 20 and e9["max_clearance_um"] == 68
 
     p6 = iso286_limits_um(16.0, "H7/p6")
-    assert p6["fit_type"] == "transition"
-    assert p6["min_clearance_um"] == -18
-    assert p6["max_clearance_um"] == 11
+    assert p6["hole_limits_um"] == [18, 0]
+    assert p6["shaft_limits_um"] == [29, 18]
+    assert p6["fit_type"] == "interference"
+    assert p6["min_clearance_um"] == -29
+    assert p6["max_clearance_um"] == 0
     assert p6["mean_clearance_um"] < 0
+    p6_hi = iso286_limits_um(30.0, "H7/p6")
+    assert p6_hi["shaft_limits_um"] == [35, 22]
+    assert p6_hi["max_clearance_um"] == -1
+    assert p6_hi["fit_type"] == "interference"
 
     rec = recipes.get("tolerance.fit_pair_gauge")
     for fc in ("H8/e9", "H11/h11"):
