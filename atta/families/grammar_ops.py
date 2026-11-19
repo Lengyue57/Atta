@@ -338,12 +338,22 @@ def _symmetry_group(spec, path, max_order):
             if not isinstance(axes, (list, tuple)) or not axes or any(a not in ("x", "y", "z") for a in axes):
                 raise _err("bad_arg", "reflect axes must be a list of x|y|z", where + ".axes",
                            "use {\"type\": \"reflect\", \"axes\": [\"x\"]}")
+            uniq_axes = list(dict.fromkeys(axes))
+            if (1 << len(uniq_axes)) > max_order:
+                raise _err("grammar_instance_budget",
+                           "symmetry group order %d exceeds max_instances=%d" % (1 << len(uniq_axes), max_order),
+                           where, "lower reflect axes or raise max_instances")
             mats = [np.eye(4)]
-            for a in dict.fromkeys(axes):
+            for a in uniq_axes:
                 mats = mats + [to_c @ _mirror(a) @ from_c @ m for m in mats]
-            labels.append("reflect(%s)" % ",".join(dict.fromkeys(axes)))
+            labels.append("reflect(%s)" % ",".join(uniq_axes))
         else:
             n = _integer(item.get("n"), where + ".n", 1, CEILING["max_instances"])
+            order = 2 * n if kind == "dihedral" else n
+            if order > max_order:
+                raise _err("grammar_instance_budget",
+                           "symmetry group order %d exceeds max_instances=%d" % (order, max_order),
+                           where, "lower n or raise max_instances")
             axis = item.get("axis", "z")
             if axis not in ("x", "y", "z"):
                 raise _err("bad_arg", "axis must be x, y or z", where + ".axis", "use axis 'z'")
@@ -355,18 +365,27 @@ def _symmetry_group(spec, path, max_order):
                 local += [r @ _flip(ang) for r in rots]
             mats = [to_c @ p @ m @ p.T @ from_c for m in local]
             labels.append("%s(%d,%s)" % (kind, n, axis))
-        group = [g @ m for g in group for m in mats]
-        if len(group) > max_order:
-            raise _err("grammar_instance_budget", "symmetry group order %d exceeds max_instances" % len(group),
-                       where, "lower n or raise max_instances")
-    # Deduplicate coincident group elements (e.g. cyclic 2 + reflect x,y).
-    seen, unique = set(), []
-    for g in group:
-        key = tuple(np.round(g, 9).ravel())
-        if key not in seen:
-            seen.add(key)
-            unique.append(g)
-    return unique, labels
+        product_size = len(group) * len(mats)
+        if product_size > max(max_order * 4, 64):
+            raise _err("grammar_instance_budget",
+                       "symmetry group product (%d) exceeds max_instances=%d" % (product_size, max_order),
+                       where, "lower symmetry orders or raise max_instances")
+        # Compose and deduplicate incrementally so redundant products (e.g. C2 x reflect(x,y))
+        # stay compact while oversized products abort immediately without over-allocating.
+        seen, next_group = set(), []
+        for g_mat in group:
+            for m_mat in mats:
+                prod = g_mat @ m_mat
+                key = tuple(np.round(prod, 9).ravel())
+                if key not in seen:
+                    seen.add(key)
+                    next_group.append(prod)
+                    if len(next_group) > max_order:
+                        raise _err("grammar_instance_budget",
+                                   "symmetry group order exceeds max_instances=%d" % max_order,
+                                   where, "lower n or raise max_instances")
+        group = next_group
+    return group, labels
 
 
 # ------------------------------------------------------------------ primitives
@@ -672,9 +691,16 @@ def expand_shape_grammar(g):
             counts[name] = used + 1
             md = tuple(sorted(counts.items()))
         children = []
-        for item in alt.body:
+        for item_i, item in enumerate(alt.body):
             lm = np.eye(4)
-            for _ in range(item.loop_count):
+            for step_i in range(item.loop_count):
+                if item_i > 0 or step_i > 0:
+                    stats["expansions"] += 1
+                    if stats["expansions"] > g["max_expansions"]:
+                        raise _err("grammar_expansion_budget", "more than max_expansions=%d rule/loop expansions"
+                                   % g["max_expansions"], path + ".args.max_expansions",
+                                   "the grammar does not terminate fast enough: lower loop counts, "
+                                   "add a terminating rule, or raise max_expansions")
                 with np.errstate(over="ignore", invalid="ignore"):
                     w = m @ lm @ item.transform.matrix(rng)
                     if item.loop_transform is not None:
@@ -1073,8 +1099,8 @@ def interpret_lsystem(g, modules):
                     stats["pruned_thin"] += 1
                 else:
                     segs.append((pos.copy(), nxt.copy(), width))
-                    if len(segs) > g["max_segments"]:
-                        raise _err("lsystem_segment_budget", "more than max_segments=%d tube segments"
+                    if len(segs) + len(leaves) > g["max_segments"]:
+                        raise _err("lsystem_segment_budget", "more than max_segments=%d tube segments and leaves"
                                    % g["max_segments"], path + ".args.max_segments",
                                    "lower iterations or raise max_segments")
             pos = nxt
@@ -1155,6 +1181,10 @@ def interpret_lsystem(g, modules):
                            "keep leaf scale bounded")
             if min(scaled) >= floor_len:
                 leaves.append((pos.copy(), H.copy(), L.copy(), U.copy(), scaled))
+                if len(segs) + len(leaves) > g["max_segments"]:
+                    raise _err("lsystem_segment_budget", "more than max_segments=%d tube segments and leaves"
+                               % g["max_segments"], path + ".args.max_segments",
+                               "lower iterations or raise max_segments")
         # Re-orthonormalise so long strings do not drift.
         H = H / np.linalg.norm(H)
         L = L - H * float(np.dot(L, H))

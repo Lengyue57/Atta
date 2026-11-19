@@ -265,6 +265,19 @@ def test_expansion_instance_triangle_and_component_budgets():
     raises("grammar_budget_ceiling", grammar, startshape="S", rules={"S": [{"shape": "box"}]},
            max_instances=10 ** 9)
     raises("grammar_empty", grammar, startshape="S", rules={"S": [{"weight": 1, "body": []}]})
+    # Finding #42.1: oversized symmetry Cartesian products must fail before allocating
+    raises("grammar_instance_budget", grammar, startshape="B", rules=BAR, max_instances=500,
+           symmetry=[{"type": "cyclic", "n": 500}, {"type": "cyclic", "n": 500}])
+    raises("grammar_instance_budget", grammar, startshape="B", rules=BAR, max_instances=50000,
+           symmetry=[{"type": "cyclic", "n": 50000}, {"type": "cyclic", "n": 50000}])
+    raises("grammar_instance_budget", grammar, startshape="B", rules=BAR, max_instances=50,
+           symmetry=[{"type": "cyclic", "n": 10}, {"type": "cyclic", "n": 10, "axis": "x"}])
+    # Finding #42.2: loop iterations (including duplicate/pruned ones) count against max_expansions
+    raises("grammar_expansion_budget", grammar, startshape="A", max_expansions=100, max_instances=50,
+           rules={"A": [{"max_depth": 20, "body": [{"call": "A", "transform": {"x": 0}},
+                                                   {"shape": "box", "loop": {"count": 5000}}]}]})
+    raises("grammar_expansion_budget", grammar, startshape="S", max_expansions=100,
+           rules={"S": [{"shape": "box", "loop": {"count": 5000}, "transform": {"s": 1e-4}}]})
 
 
 @pytest.mark.parametrize("args,code,where", [
@@ -399,6 +412,9 @@ def test_tropism_bends_growth_downward():
     (dict(axiom="A", rules={"A": '"FA'}, iterations=25, step=100, step_decay=10.0), "grammar_overflow"),
     (dict(axiom="FF", rules={"X": "X"}, iterations=1, tropism={"vector": [1e200, 1e200, 0], "e": 0.2}), "bad_arg"),
     (dict(axiom="FF", rules={"X": "X"}, iterations=1, tropism={"vector": [1, 0, 0], "e": 1e308}), "bad_arg"),
+    # Finding #42.3: leaf primitives count against max_segments
+    (dict(axiom="L", rules={"L": "LLLLLLLLLL"}, iterations=3, max_segments=50,
+          leaf={"symbol": "L", "shape": "box", "size": [3, 3, 3]}), "lsystem_segment_budget"),
 ])
 def test_lsystem_budgets_and_bad_input_fail_closed(args, code):
     err = raises(code, lsys, **args)
