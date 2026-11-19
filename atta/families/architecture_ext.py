@@ -521,12 +521,14 @@ def _build_dome_oculus(v, quality="draft"):
         zz = drum_h + (r_in + t_loc) * math.sin(p)
         ring_pts.append((rr, zz))
 
-    # Raised oculus compression collar at the apex.
+    # Raised oculus compression collar at the apex (always strictly above extrados tip).
     z_oc_in = drum_h + r_in * math.sin(phi_oc)
+    z_oc_out = drum_h + (r_in + t_top) * math.sin(phi_oc)
     collar_h = max(1.5e-3, 0.45 * t)
+    z_collar = max(z_oc_out, z_oc_in) + collar_h
     collar_out = max(oc_r + 1.15 * t_top, (r_in + t_top) * math.cos(phi_oc))
-    ring_pts.append((collar_out, z_oc_in + collar_h))
-    ring_pts.append((oc_r, z_oc_in + collar_h))
+    ring_pts.append((collar_out, z_collar))
+    ring_pts.append((oc_r, z_collar))
 
     # Intrados descending back to drum inner wall.
     for p in phis[::-1]:
