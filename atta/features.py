@@ -10,12 +10,14 @@ acyclic dependencies, known ops and allowed arguments.  Every failure raises
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import ast
 import math
 
 import numpy as np
 
 from . import boolean as _B
+from . import curves as _C
 from . import primitives as _P
 from . import surfaces as _S
 from .errors import AttaError
@@ -31,21 +33,21 @@ _FUNCS = {"sqrt": math.sqrt, "sin": math.sin, "cos": math.cos, "tan": math.tan,
 _EXTRA_OPS: dict = {}
 
 FEATURE_OPS = {
-    "box": {"required": ("size",), "optional": ("center", "align"), "arity": 0,
+    "box": {"required": ("size",), "optional": ("center", "align", "tags"), "arity": 0,
             "doc": "Axis-aligned box; size=[x,y,z] mm."},
     "cylinder": {"required": ("radius", "height"),
-                 "optional": ("center", "axis", "segments", "caps"), "arity": 0,
+                 "optional": ("center", "axis", "segments", "caps", "tags"), "arity": 0,
                  "doc": "Solid cylinder along axis (default z)."},
-    "sphere": {"required": ("radius",), "optional": ("center", "segments", "rings"),
+    "sphere": {"required": ("radius",), "optional": ("center", "segments", "rings", "tags"),
                "arity": 0, "doc": "UV sphere."},
     "cone": {"required": ("r_bottom", "r_top", "height"),
-             "optional": ("center", "axis", "segments"), "arity": 0,
+             "optional": ("center", "axis", "segments", "tags"), "arity": 0,
              "doc": "Cone/frustum; a zero radius becomes an apex."},
     "torus": {"required": ("major_radius", "minor_radius"),
-              "optional": ("center", "axis", "seg_major", "seg_minor"), "arity": 0,
+              "optional": ("center", "axis", "seg_major", "seg_minor", "tags"), "arity": 0,
               "doc": "Torus."},
-    "revolve": {"required": ("profile_rz",), "optional": ("segments", "axis", "caps"),
-                "arity": 0, "doc": "Revolve [r,z] profile about the axis."},
+    "revolve": {"required": (), "optional": ("profile_rz", "segments", "axis", "caps", "tags"),
+                "arity": 0, "doc": "Revolve [r,z] profile or sketch segments about the axis."},
     "loft": {"required": ("rings",), "optional": ("closed_ring", "caps"), "arity": 0,
              "doc": "Loft equally sized 3D rings."},
     "sweep": {"required": ("section_xy", "path"),
@@ -56,9 +58,10 @@ FEATURE_OPS = {
     "gordon": {"required": ("u_curves", "v_curves"),
                "optional": ("u_samples", "v_samples", "flip"), "arity": 0,
                "doc": "Open Gordon patch from two curve families."},
-    "extrude": {"required": ("loop_xy", "height"),
-                "optional": ("direction", "caps", "holes_xy"), "arity": 0,
-                "doc": "Extrude a closed 2D loop; holes_xy cuts inner loops."},
+    "extrude": {"required": ("height",),
+                "optional": ("loop_xy", "segments", "direction", "caps", "holes_xy", "tags"),
+                "arity": 0,
+                "doc": "Extrude a closed 2D loop or sketch segments; holes_xy cuts inner loops."},
     "thicken": {"required": ("thickness",), "optional": ("offset",), "arity": 1,
                 "doc": "Shell an open surface input."},
     "lobes": {"required": (), "optional": ("count", "amplitude", "phase_deg", "twist_deg"),
@@ -99,18 +102,21 @@ def extra_ops() -> dict:
 #: (exactly 4 mat3), bool, enum (any string), enum:<a|b|...>, strings (list of
 #: strings), points (>=1 vec3-or-vec2), anything (defer to the op).
 _ARG_TYPES = {
-    "box": {"size": "vec3", "center": "vec3", "align": "anything"},
+    "box": {"size": "vec3", "center": "vec3", "align": "anything", "tags": "anything"},
     "cylinder": {"radius": "length", "height": "length", "center": "vec3",
-                 "axis": "enum:x|y|z", "segments": ("int", 3), "caps": "bool"},
+                 "axis": "enum:x|y|z", "segments": ("int", 3), "caps": "bool",
+                 "tags": "anything"},
     "sphere": {"radius": "length", "center": "vec3", "segments": ("int", 3),
-               "rings": ("int", 2)},
+               "rings": ("int", 2), "tags": "anything"},
     "cone": {"r_bottom": "length", "r_top": "length", "height": "length",
-             "center": "vec3", "axis": "enum:x|y|z", "segments": ("int", 3)},
+             "center": "vec3", "axis": "enum:x|y|z", "segments": ("int", 3),
+             "tags": "anything"},
     "torus": {"major_radius": "length", "minor_radius": "length",
               "center": "vec3", "axis": "enum:x|y|z",
-              "seg_major": ("int", 3), "seg_minor": ("int", 3)},
-    "revolve": {"profile_rz": "mat2", "segments": ("int", 3),
-                "axis": "enum:x|y|z", "caps": "bool"},
+              "seg_major": ("int", 3), "seg_minor": ("int", 3),
+              "tags": "anything"},
+    "revolve": {"profile_rz": "mat2", "segments": "anything",
+                "axis": "enum:x|y|z", "caps": "bool", "tags": "anything"},
     "loft": {"rings": "rings", "closed_ring": "bool", "caps": "bool"},
     "sweep": {"section_xy": "mat2", "path": "mat3", "closed": "bool",
               "twist_deg": "number", "scale_end": "number"},
@@ -119,8 +125,9 @@ _ARG_TYPES = {
     "gordon": {"u_curves": "curves", "v_curves": "curves",
                "u_samples": ("int", 2), "v_samples": ("int", 2),
                "flip": "bool"},
-    "extrude": {"loop_xy": "mat2", "height": "length",
-                "direction": "vec3_free", "caps": "bool", "holes_xy": "loops"},
+    "extrude": {"loop_xy": "mat2", "segments": "anything", "height": "length",
+                "direction": "vec3_free", "caps": "bool", "holes_xy": "loops",
+                "tags": "anything"},
     "thicken": {"thickness": "length", "offset": "number"},
     "lobes": {"count": ("int", 0), "amplitude": "number",
               "phase_deg": "number", "twist_deg": "number"},
@@ -403,6 +410,15 @@ def _prepare(op, args, meshes, scale, path):
             return v.strip().lower() in ("1", "true", "yes", "on")
         return bool(v)
 
+    if "tags" in args and args["tags"] is not None:
+        raw_tags = args["tags"]
+        if not isinstance(raw_tags, Mapping) or any(
+            not isinstance(k, str) or not k or not isinstance(v, str) or not v
+            for k, v in raw_tags.items()
+        ):
+            raise AttaError("bad_arg", "tags must be a dict of non-empty string -> string",
+                            path=path + ".args.tags", fix="use e.g. {'end': 'cap', 'start': 'base'}")
+
     if op == "box":
         return {"size": vec(req("size"), "size"), "center": vec(opt("center", (0, 0, 0)), "center"),
                 "align": str(opt("align", "center"))}
@@ -428,9 +444,22 @@ def _prepare(op, args, meshes, scale, path):
                 "seg_major": integer(opt("seg_major", 96), "seg_major", 3),
                 "seg_minor": integer(opt("seg_minor", 32), "seg_minor", 3)}
     if op == "revolve":
-        return {"profile_rz": _mat(req("profile_rz"), "profile_rz", 2,
-                                   path + ".args.profile_rz", min_rows=2, scale=scale),
-                "segments": integer(opt("segments", 96), "segments", 3),
+        raw_segs = opt("segments")
+        has_sketch = isinstance(raw_segs, (list, tuple))
+        has_prof = opt("profile_rz") is not None
+        if has_sketch and has_prof:
+            raise AttaError("bad_arg", "revolve takes either profile_rz or sketch segments, not both",
+                            path=path + ".args", fix="omit profile_rz when passing sketch segments")
+        if has_sketch:
+            loop_rz, _ = _C.eval_sketch_segments(raw_segs)
+            prof = np.vstack([loop_rz, loop_rz[:1]]) * float(scale)
+            rev_segs = 96
+        else:
+            prof = _mat(req("profile_rz"), "profile_rz", 2,
+                        path + ".args.profile_rz", min_rows=2, scale=scale)
+            rev_segs = integer(opt("segments", 96), "segments", 3)
+        return {"profile_rz": prof,
+                "segments": rev_segs,
                 "axis": str(opt("axis", "z")), "caps": flag(opt("caps", True))}
     if op == "loft":
         rings = req("rings")
@@ -483,8 +512,22 @@ def _prepare(op, args, meshes, scale, path):
                       path + ".args.holes_xy[%d]" % i,
                       min_rows=3, scale=scale)
                  for i, hole in enumerate(raw_holes)]
-        return {"loop_xy": _mat(req("loop_xy"), "loop_xy", 2, path + ".args.loop_xy",
-                                min_rows=3, scale=scale),
+        raw_segs = opt("segments")
+        has_segs = raw_segs is not None
+        has_loop = opt("loop_xy") is not None
+        if has_segs and has_loop:
+            raise AttaError("bad_arg", "extrude takes either loop_xy or segments, not both",
+                            path=path + ".args", fix="omit loop_xy when passing sketch segments")
+        if not has_segs and not has_loop:
+            raise AttaError("bad_arg", "missing required loop_xy or segments for extrude",
+                            path=path + ".args", fix="add args.loop_xy or args.segments")
+        if has_segs:
+            loop_xy, _ = _C.eval_sketch_segments(raw_segs)
+            loop = loop_xy * float(scale)
+        else:
+            loop = _mat(req("loop_xy"), "loop_xy", 2, path + ".args.loop_xy",
+                        min_rows=3, scale=scale)
+        return {"loop_xy": loop,
                 "height": leng(req("height"), "height"),
                 "direction": vec(opt("direction", (0, 0, 1)), "direction", scaled=False),
                 "caps": flag(opt("caps", True)),
