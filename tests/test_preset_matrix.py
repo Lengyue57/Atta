@@ -33,14 +33,17 @@ from test_coverage_gate import category_of, constraints_for  # noqa: E402
 PRESETS = ("safe", "nominal", "hero")
 
 
-def expected_genus_for(recipe, values):
+def expected_genus_for(recipe, resolved):
     """The genus the recipe promises for these resolved values (or None)."""
-    fn = getattr(recipe, "expected_genus_for", None)
-    if callable(fn):
-        return fn(values)
+    for attr in ("genus_for", "expected_genus_for"):
+        fn = getattr(recipe, attr, None)
+        if callable(fn):
+            return fn(resolved.values)
+    if getattr(resolved, "expected_genus", None) is not None:
+        return resolved.expected_genus
     g = getattr(recipe, "expected_genus", None)
     if callable(g):
-        return g(values)
+        return g(resolved.values)
     return g
 
 
@@ -69,7 +72,7 @@ def test_recipe_preset_passes_category_gate(rid, preset):
     mesh = recipe.build_shape(resolved.values, quality="draft")
     if isinstance(mesh, tuple):
         mesh = mesh[0]
-    genus = expected_genus_for(recipe, resolved.values)
+    genus = expected_genus_for(recipe, resolved)
     cons = constraints_for(category, recipe)
     cons.pop("genus", None)
     if genus is not None:
