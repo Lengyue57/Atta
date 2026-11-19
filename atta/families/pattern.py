@@ -11,8 +11,9 @@ Three recipes, each aimed at a *generalisation technique* rather than one shape
     are one cell shrunk by ``wall``, and every neighbour is at the same centre
     distance).  Rows/cols are explicit, the array is centred, and every hole is
     guaranteed to be fully enclosed by an error-level fit constraint.  That
-    makes the genus exactly ``rows * cols``, and the recipe publishes that count
-    as its per-model ``expected_genus`` (see :func:`_publish_genus`).
+    makes the genus exactly ``rows * cols``, and the recipe declares exactly that
+    expression as its ``expected_genus`` (evaluated per build by
+    :func:`atta.registry.evaluate_genus`).
 
 ``assembly.bolt_nut``
     **Assembly mates + constraint propagation (fastener clearance)**.  A hex-head
@@ -288,7 +289,7 @@ def _difference_all(mesh, cutters):
                  "hex_rotation": 0.0, "corner_radius": 5.0},
     },
     tags=["pattern", "honeycomb", "perforation", "pattern_linear", "hex", "sheet"],
-    expected_genus=35, material="aluminium",
+    expected_genus="rows * cols", material="aluminium",
     constraints=[
         {"id": "fit_x",
          "expr": ("((cols - 0.5) * cell_size + (cell_size - wall)) "
@@ -380,8 +381,7 @@ def _build_honeycomb_panel(v, quality="draft"):
         quality, 6, 10, 14)), T)
     out = difference(plate, cutter)
 
-    holes = int(rows) * int(cols)
-    _publish_genus("pattern.honeycomb_panel", holes)
+    # genus = rows * cols is declared on the recipe (expected_genus expression)
     return out, finish(material="aluminium")
 
 

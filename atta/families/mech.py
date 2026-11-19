@@ -22,10 +22,11 @@ recipe constraints are the design rules that formula assumes.
     bolt circle, plate rim, bolt web and hub wall are all derived, and the
     bolt pattern is a real polar array of through holes.
     Genus ``1 + bolt_holes``: one handle for the bore plus one per bolt hole.
-    All three presets keep the same 6-bolt pattern so the registered
-    ``expected_genus`` (7) is exact for every preset; changing ``bolt_holes``
-    moves the genus to ``1 + bolt_holes`` and can be verified with
-    ``atta verify --constraints '{"genus": N}'``.
+    The recipe declares exactly that expression as its ``expected_genus``
+    (:func:`atta.registry.evaluate_genus`), so verify compares every build
+    against ``1 + bolt_holes`` for the parameters actually built (7 at the
+    6-bolt presets); the ``bolt_web``/``bolt_rim`` errors keep the holes
+    separate and inside the plate, which is what makes the count exact.
 
 ``tolerance.clearance_ladder``
     FDM print-fit coupon: one spine, a row of *blind* gauge holes with a
@@ -189,8 +190,7 @@ def build_gear_involute(v, quality="draft"):
     "抗剪螺栓孔为真实极坐标阵列贯穿板厚，可选环形密封垫槽。"
     "螺栓圆、板边余量、螺栓间腹板、轮毂壁厚全部由直径派生。"
     "genus = 1 + bolt_holes（中心孔 1 个 + 每个贯穿螺栓孔 1 个）；"
-    "三套 preset 固定 6 螺栓，故 expected_genus=7 对每套 preset 都精确；"
-    "改 bolt_holes 后请用 verify --constraints '{\"genus\": 1+bolt_holes}' 复核。",
+    "expected_genus 声明为表达式 1 + bolt_holes，改螺栓数后 verify 仍按实际孔数核对。",
     params={
         "outer_d": {"type": "float", "default": 160.0, "min": 40.0, "max": 600.0,
                     "unit": "mm", "group": "plate", "description": "法兰外径"},
@@ -237,7 +237,7 @@ def build_gear_involute(v, quality="draft"):
                  "groove_depth": 1.5},
     },
     tags=["mechanical", "flange", "revolve", "pattern_polar", "boolean"],
-    expected_genus=7, material="steel",
+    expected_genus="1 + bolt_holes", material="steel",
     constraints=[
         {"id": "bolt_rim", "severity": "error",
          "expr": "outer_d - bolt_circle_d - bolt_hole_d >= 0.06 * outer_d",
