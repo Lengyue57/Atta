@@ -54,7 +54,7 @@ python3 -m atta catalog --verbose --json
 | `max_depth` | int `>= 0` | `256` | `10,000` | Maximum call depth. |
 | `depth_policy` | `"error" \| "prune"` | `"error"` | — | `"error"` fails closed when `depth > max_depth`; `"prune"` stops silently (EisenScript `maxdepth`). |
 | `max_instances` | int `>= 1` | `4,096` | `50,000` | Maximum emitted primitives *after* symmetry expansion. |
-| `max_expansions` | int `>= 1` | `200,000` | `1,000,000` | Maximum rule evaluations. |
+| `max_expansions` | int `>= 1` | `200,000` | `1,000,000` | Maximum rule / body-item / loop-step evaluations. |
 | `max_triangles` | int `>= 1` | `1,000,000` | `5,000,000` | Pre-union and post-union triangle budget. |
 | `max_components` | int `>= 1` | `null` | — | Optional upper bound on disconnected components (`1` requires a single solid). |
 
@@ -179,7 +179,7 @@ before transforms:
 | `move_symbols` | string | `"f"` | — | Symbols that advance without emitting geometry. |
 | `min_width` | length (`mm`) | `1e-3` | — | Prune segments thinner than `min_width` (`pruned_thin`). |
 | `max_symbols` | int `>= 1` | `200,000` | `1,000,000` | Maximum rewritten module count per iteration. |
-| `max_segments` | int `>= 1` | `5,000` | `50,000` | Maximum emitted tube segments. |
+| `max_segments` | int `>= 1` | `5,000` | `50,000` | Maximum emitted tube segments plus leaf primitives. |
 | `max_depth` | int `>= 0` | `256` | `10,000` | Maximum `[` ... `]` bracket nesting depth. |
 | `max_triangles` | int `>= 1` | `1,000,000` | `5,000,000` | Pre-union and post-union triangle budget. |
 | `max_components` | int `>= 1` | `null` | — | Optional upper bound on disconnected components. |
