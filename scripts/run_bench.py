@@ -81,28 +81,53 @@ DEFAULT_N = 100
 MAX_VARIANT_FRACTION = 0.30
 
 # ---------------------------------------------------------------- op model
-#: Ops Atta exposes as first-class feature ops (read live from the registry at
-#: run time; this is the documentation copy used by ``--regenerate``).
+#: Corpus vocabulary tokens mapped to registered first-class feature ops
+#: (verified live against ``atta.features.FEATURE_OPS``).
+NATIVE_OP_ALIASES = {
+    "hull": "hull",
+    "minkowski": "minkowski",
+    "polyhedron": "polyhedron",
+    "heightmap": "heightmap",
+    "surface": "heightmap",
+    "deform": "deform",
+    "morph": "morph",
+    "projection": "projection_extrude",
+    "projection_extrude": "projection_extrude",
+    "offset": "offset",
+    "subdiv": "subdivide",
+    "subdivide": "subdivide",
+    "smooth": "repair",
+    "remesh": "repair",
+    "libfive_tree": "field_tree",
+    "field_tree": "field_tree",
+    "rule": "shape_grammar",
+    "startshape": "shape_grammar",
+    "cf::symmetry": "shape_grammar",
+    "shape_grammar": "shape_grammar",
+    "lsystem": "lsystem",
+}
+#: Ops Atta exposes as first-class feature ops (direct names + documented
+#: corpus-vocabulary aliases backed by live registered ops in NATIVE_OP_ALIASES).
 NATIVE_OPS = {
     "box", "cylinder", "sphere", "cone", "torus", "revolve", "loft", "sweep",
     "coons", "gordon", "extrude", "thicken", "lobes", "union", "difference",
     "intersection", "mirror", "pattern_linear", "pattern_polar", "transform",
     "text_engrave", "text_emboss", "sdf", "gyroid",
-}
+} | set(NATIVE_OP_ALIASES)
 #: Ops with no dedicated feature op but a documented composition over the ops
 #: above.  Each entry states HOW, because "constructible" has to be auditable.
 CONSTRUCTIBLE_OPS = {
     "hole": "cylinder subtraction",
     "shell": "difference of two revolves / an offset inner body",
-    "chamfer": "difference of rotated cutter prisms (see primitive.chamfer_box)",
-    "fillet": "difference of 'chamfer prism minus cylinder' cutters",
+    "chamfer": "difference of rotated cutter prisms (and exact BREP chamfer op)",
+    "fillet": "difference of 'chamfer prism minus cylinder' cutters (and exact BREP fillet op)",
     "knurl": "pattern_polar of a cutter, subtracted",
     "emboss": "union of a raised body (text_emboss exists)",
     "engrave": "difference of a text cutter (text_engrave exists)",
     "text": "text_engrave / text_emboss op",
     "pocket": "box subtraction",
-    "bend": "loft between rotated sections",
-    "twist": "loft/sweep with twist_deg",
+    "bend": "deform(mode='bend') / loft between rotated sections",
+    "twist": "deform(mode='twist') / loft/sweep with twist_deg",
     "teeth": "extrude of a sampled profile loop",
     "lattice": "sdf(op) / gyroid(op) implicit field",
     "lipschitz": "sdf() calibrates the field gradient to a metric distance",
@@ -112,23 +137,7 @@ CONSTRUCTIBLE_OPS = {
 #: vocabulary*: op_coverage is measured only over declared ops in this set, so a
 #: record cannot inflate or deflate the metric with renderer tokens.  Everything
 #: outside the vocabulary is reported separately as ``ops_ignored``.
-MISSING_OPS = {
-    "hull": "Minkowski/hull of arbitrary solids is not in the op set",
-    "minkowski": "same",
-    "projection": "no 3D->2D projection op",
-    "polyhedron": "no arbitrary vertex/face solid op",
-    "offset": "surface offset (only 'thicken' for shells)",
-    "smooth": "no smoothing/subdivision op",
-    "morph": "no shape interpolation op",
-    "surface": "no heightmap op",
-    "deform": "no free-form deformation op",
-    "subdiv": "no subdivision op",
-    "remesh": "no remeshing op",
-    "rule": "grammar/L-system rule (Structure Synth, CFDG, L-systems)",
-    "startshape": "grammar/L-system entry rule",
-    "cf::symmetry": "grammar symmetry directive (CFDG)",
-    "libfive_tree": "implicit/SDF expression tree",
-}
+MISSING_OPS = {}
 
 #: Curated geometric vocabulary used as the op_coverage denominator.
 GEOMETRIC_VOCAB = set(NATIVE_OPS) | set(CONSTRUCTIBLE_OPS) | set(MISSING_OPS)
@@ -358,12 +367,21 @@ def _ngon(r, n, cx=0.0, cy=0.0):
 
 
 def t_box_csg(d, opts=None):
-    """box, optionally minus a through bore when the source has a hole."""
+    """box, optionally minus a bore (blind or through) when the source has a hole."""
+    opts = opts or {}
     L, W, H = d["L"], d["W"], d["H"]
     feats = [{"id": "base", "op": "box", "args": {"size": [L, W, H]}}]
-    if not (opts or {}).get("holes", False):
+    if not opts.get("holes", False):
         return _spec("box_csg", feats)
     r = min(d.get("R") or 0.18 * min(L, W), 0.45 * min(L, W))
+    if opts.get("blind_hole", False):
+        # A blind hole cuts from the top face without piercing the base (genus 0).
+        feats += [
+            {"id": "bore", "op": "cylinder",
+             "args": {"radius": r, "height": H * 0.8, "center": [0, 0, 0.35 * H]}},
+            {"id": "out", "op": "difference", "args": {}, "inputs": ["base", "bore"]},
+        ]
+        return _spec("box_csg", feats)
     feats += [
         {"id": "bore", "op": "cylinder",
          "args": {"radius": r, "height": H * 2.0, "center": [0, 0, 0]}},
@@ -531,17 +549,19 @@ def t_sphere_cone_csg(d, opts=None):
 
     A through bore is part of the source's construction, not a default.  The
     earlier unconditional bore made the template invent genus-1 topology for
-    genus-0 records.
+    genus-0 records.  Sphere uses 36 segments (vs cone's 48) so coaxial
+    meridians do not collide coplanarly and leave zero-area slivers.
     """
     R, H = d["R"], d["H"]
     body = [
-        {"id": "s", "op": "sphere", "args": {"radius": R, "center": [0, 0, R]}},
+        {"id": "s", "op": "sphere",
+         "args": {"radius": R, "center": [0, 0, 0.7 * R], "segments": 36}},
         {"id": "c", "op": "cone",
-         "args": {"r_bottom": R, "r_top": 0.2 * R, "height": H,
-                  "center": [0, 0, H / 2.0]}},
+         "args": {"r_bottom": R, "r_top": 0.25 * R, "height": H,
+                  "center": [0, 0, H / 2.0], "segments": 47}},
         {"id": "body", "op": "union", "args": {}, "inputs": ["s", "c"]},
     ]
-    if not (opts or {}).get("holes", False):
+    if not (opts or {}).get("holes", False) or (opts or {}).get("blind_hole", False):
         return _spec("sphere_cone_csg", body)
     # Long enough to exit both the sphere (top 2R) and the cone (top H).
     top = max(2.0 * R, H)
@@ -577,9 +597,9 @@ def t_gyroid_slab(d, opts=None):
     opts = opts or {}
     params = opts.get("params") or {}
     field = str(opts.get("field") or "gyroid")
-    L = max(12.0, d.get("L") or 40.0)
-    W = max(12.0, d.get("W") or 30.0)
-    H = max(8.0, d.get("H") or 20.0)
+    L = max(6.0, d.get("L") or 40.0)
+    W = max(6.0, d.get("W") or 30.0)
+    H = max(4.0, d.get("H") or 20.0)
     period = params.get("period") or params.get("cell_size") or params.get("scale_x")
     thickness = params.get("thickness") or params.get("shell")
     clip_radius = params.get("clip_radius")
@@ -609,9 +629,9 @@ def t_sdf_field(d, opts=None):
     opts = opts or {}
     params = opts.get("params") or {}
     field = str(opts.get("field") or "gyroid")
-    L = max(12.0, d.get("L") or 40.0)
-    W = max(12.0, d.get("W") or 30.0)
-    H = max(8.0, d.get("H") or 20.0)
+    L = max(6.0, d.get("L") or 40.0)
+    W = max(6.0, d.get("W") or 30.0)
+    H = max(4.0, d.get("H") or 20.0)
     args = {"size": [L, W, H], "field": field, "resolution": 12}
     period = params.get("period") or params.get("cell_size") or params.get("scale_x")
     thickness = params.get("thickness") or params.get("shell")
@@ -627,22 +647,338 @@ def t_sdf_field(d, opts=None):
 
 def t_text_plate(d, opts=None):
     """Plate plus single-stroke text (engraved or embossed) on its top face."""
-    L = max(20.0, d.get("L") or 60.0)
-    W = max(12.0, d.get("W") or 30.0)
+    L = max(2.0, d.get("L") or 60.0)
+    W = max(1.0, d.get("W") or 30.0)
     T = max(1.0, d.get("T") or 4.0)
     text = str((opts or {}).get("text") or "ATTA")
-    cap = min(0.42 * W, max(4.0, 0.55 * L / max(2, len(text))))
-    depth = max(0.6, min(1.2, 0.4 * T))
-    stroke = max(0.7, 0.09 * cap)
+    cap = min(0.45 * W, max(0.3, 0.55 * L / max(2, len(text))))
+    depth = max(0.2, min(1.2, 0.4 * T))
+    stroke = max(0.08, 0.12 * cap)
     return _spec("text_plate", [
         {"id": "plate", "op": "box",
          "args": {"size": [L, W, T], "center": [0, 0, T / 2.0]}},
         {"id": "txt", "op": "text_emboss",
          "args": {"text": text, "height": cap, "depth": depth,
-                  "stroke_width": stroke, "at": [0, 0], "align": "center"}},
+                  "stroke_width": stroke, "align": "center"}},
         {"id": "lift", "op": "transform",
          "args": {"translate": [0, 0, T]}, "inputs": ["txt"]},
         {"id": "out", "op": "union", "args": {}, "inputs": ["plate", "lift"]},
+    ])
+
+
+def t_shape_grammar(d, opts=None):
+    """Declarative shape grammar (CFDG / Structure Synth) with optional symmetry."""
+    opts = opts or {}
+    ref = opts.get("ref_ops") or set()
+    params = opts.get("params") or {}
+    L, W, H = max(6.0, d["L"]), max(6.0, d["W"]), max(4.0, d["H"])
+    unit = max(2.0, min(L, W, H) / 4.0)
+    depth = 4
+    for key in ("max_depth", "maxdepth", "depth", "levels", "iterations"):
+        val = params.get(key)
+        if val is not None and val >= 1:
+            depth = max(2, min(6, int(round(val))))
+            break
+    args = {
+        "startshape": "ROOT",
+        "unit": unit,
+        "max_components": 1,
+        "depth_policy": "prune",
+    }
+    if "cf::symmetry" in ref:
+        order = 6
+        for key in ("order", "symmetry", "folds", "n", "arms", "petals", "count"):
+            val = params.get(key)
+            if val is not None and val >= 2:
+                order = max(2, min(13, int(round(val))))
+                break
+        sym_kind = "CF::Dihedral" if (ref & {"mirror", "flip"}) else "CF::Cyclic"
+        args["symmetry"] = "%s, %d" % (sym_kind, order)
+        args["rules"] = {
+            "ROOT": [
+                {"shape": "cylinder", "transform": {"s": [2.2, 2.2, 0.7]}},
+                {"call": "ARM", "transform": {"x": 0.9}},
+            ],
+            "ARM": [{"weight": 1.0, "max_depth": depth, "body": [
+                {"shape": "box", "transform": {"s": [1.0, 0.25, 0.45]}},
+                {"call": "ARM", "transform": {"x": 0.75, "s": 0.85}},
+            ]}],
+        }
+    elif "pattern_polar" in ref:
+        args["symmetry"] = "CF::Cyclic, 6"
+        args["rules"] = {
+            "ROOT": [
+                {"shape": "cylinder", "transform": {"s": [2.0, 2.0, 0.7]}},
+                {"call": "ARM", "transform": {"x": 0.85}},
+            ],
+            "ARM": [{"weight": 1.0, "max_depth": depth, "body": [
+                {"shape": "box", "transform": {"s": [1.0, 0.28, 0.45]}},
+                {"call": "ARM", "transform": {"x": 0.75, "s": 0.85}},
+            ]}],
+        }
+    else:
+        args["rules"] = {
+            "ROOT": [{"weight": 1.0, "max_depth": depth + 1, "body": [
+                {"shape": "box", "transform": {"s": [1.2, 1.2, 0.9]}},
+                {"call": "ROOT", "transform": {"z": 0.75, "r": 12.0, "s": 0.88}},
+            ]}],
+        }
+    return _spec("shape_grammar", [{"id": "out", "op": "shape_grammar", "args": args}])
+
+
+def t_lsystem_tree(d, opts=None):
+    """3D turtle L-system branching solid."""
+    opts = opts or {}
+    params = opts.get("params") or {}
+    L, W, H = max(8.0, d["L"]), max(8.0, d["W"]), max(8.0, d["H"])
+    iters = 2
+    for key in ("iterations", "depth", "levels", "order"):
+        val = params.get(key)
+        if val is not None and val >= 1:
+            iters = max(1, min(3, int(round(val))))
+            break
+    angle = float(params.get("angle") or params.get("turn_angle") or 28.0)
+    angle = max(10.0, min(60.0, angle))
+    step = max(4.0, min(20.0, H / 4.0))
+    width = max(1.0, min(step * 0.4, min(L, W) / 10.0))
+    return _spec("lsystem_tree", [{
+        "id": "out", "op": "lsystem",
+        "args": {
+            "axiom": "F[+F][-F][&F][^F]",
+            "rules": {"F": 'F"![+F][-F]'},
+            "iterations": iters, "angle": angle,
+            "step": step, "width": width,
+            "joints": True, "max_components": 1,
+        },
+    }])
+
+
+def t_hull_solid(d, opts=None):
+    """Convex hull over two offset solids (plus optional bore)."""
+    opts = opts or {}
+    L, W, H = max(2.0, d["L"]), max(2.0, d["W"]), max(2.0, d["H"])
+    feats = [
+        {"id": "a", "op": "box",
+         "args": {"size": [L, W, 0.5 * H], "center": [0, 0, -0.25 * H]}},
+        {"id": "b", "op": "box",
+         "args": {"size": [0.6 * L, 0.6 * W, 0.5 * H], "center": [0, 0, 0.25 * H]}},
+        {"id": "body", "op": "hull", "args": {}, "inputs": ["a", "b"]},
+    ]
+    if not opts.get("holes", False) or opts.get("blind_hole", False):
+        return _spec("hull_solid", feats)
+    r = min(d.get("R") or 0.16 * min(L, W), 0.25 * min(L, W))
+    feats += [
+        {"id": "bore", "op": "cylinder",
+         "args": {"radius": max(0.4, r), "height": H * 2.0, "center": [0, 0, 0]}},
+        {"id": "out", "op": "difference", "args": {}, "inputs": ["body", "bore"]},
+    ]
+    return _spec("hull_solid", feats)
+
+
+def t_minkowski_solid(d, opts=None):
+    """Minkowski sum of a core prism and a rounding ball (exact convex+convex)."""
+    opts = opts or {}
+    L, W, H = max(3.0, d["L"]), max(3.0, d["W"]), max(3.0, d["H"])
+    r = max(0.4, min(0.15 * min(L, W, H), 4.0))
+    feats = [
+        {"id": "core", "op": "box",
+         "args": {"size": [L - 2.0 * r, W - 2.0 * r, H - 2.0 * r]}},
+        {"id": "ball", "op": "sphere", "args": {"radius": r, "segments": 12}},
+        {"id": "body", "op": "minkowski", "args": {}, "inputs": ["core", "ball"]},
+    ]
+    if not opts.get("holes", False) or opts.get("blind_hole", False):
+        return _spec("minkowski_solid", feats)
+    rb = min(d.get("R") or 0.18 * min(L, W), 0.35 * min(L, W))
+    feats += [
+        {"id": "bore", "op": "cylinder",
+         "args": {"radius": max(0.4, rb), "height": H * 2.0, "center": [0, 0, 0]}},
+        {"id": "out", "op": "difference", "args": {}, "inputs": ["body", "bore"]},
+    ]
+    return _spec("minkowski_solid", feats)
+
+
+def t_polyhedron_solid(d, opts=None):
+    """Explicit faceted closed polyhedron (tapered octagonal prism, n-gon caps)."""
+    opts = opts or {}
+    L, W, H = max(2.0, d["L"]), max(2.0, d["W"]), max(2.0, d["H"])
+    cx, cy = 0.2929 * L, 0.2929 * W
+    hx, hy, hz = L / 2.0, W / 2.0, H / 2.0
+    bot = [
+        [-hx + cx, -hy, -hz], [hx - cx, -hy, -hz],
+        [hx, -hy + cy, -hz], [hx, hy - cy, -hz],
+        [hx - cx, hy, -hz], [-hx + cx, hy, -hz],
+        [-hx, hy - cy, -hz], [-hx, -hy + cy, -hz],
+    ]
+    top = [[p[0] * 0.78, p[1] * 0.78, hz] for p in bot]
+    pts = bot + top
+    faces = [list(range(7, -1, -1)), list(range(8, 16))]
+    for i in range(8):
+        j = (i + 1) % 8
+        faces.append([i, j, 8 + j, 8 + i])
+    feats = [{"id": "body", "op": "polyhedron",
+              "args": {"points": pts, "faces": faces}}]
+    if not opts.get("holes", False) or opts.get("blind_hole", False):
+        return _spec("polyhedron_solid", feats)
+    r = min(d.get("R") or 0.18 * min(L, W), 0.32 * min(L, W))
+    feats += [
+        {"id": "bore", "op": "cylinder",
+         "args": {"radius": max(0.4, r), "height": H * 2.0, "center": [0, 0, 0]}},
+        {"id": "out", "op": "difference", "args": {}, "inputs": ["body", "bore"]},
+    ]
+    return _spec("polyhedron_solid", feats)
+
+
+def t_heightmap_solid(d, opts=None):  # noqa: ARG001
+    """Closed heightfield solid via OpenSCAD surface()-equivalent ``heightmap``."""
+    L, W, H = max(2.0, d["L"]), max(2.0, d["W"]), max(1.5, d["H"])
+    base_h = max(0.5, 0.35 * H)
+    amp = max(0.2, H - base_h)
+    nx, ny = 11, 11
+    heights = [
+        [amp * math.sin(math.pi * i / (ny - 1)) * math.sin(math.pi * j / (nx - 1))
+         for j in range(nx)]
+        for i in range(ny)
+    ]
+    return _spec("heightmap_solid", [{
+        "id": "out", "op": "heightmap",
+        "args": {"heights": heights, "size": [L, W], "base": base_h, "center": True},
+    }])
+
+
+def t_deform_solid(d, opts=None):
+    """Smooth deformation (twist / bend / taper) on a closed base solid."""
+    opts = opts or {}
+    ref = opts.get("ref_ops") or set()
+    L, W, H = max(3.0, d["L"]), max(3.0, d["W"]), max(3.0, d["H"])
+    if "twist" in ref:
+        dargs = {"mode": "twist", "axis": "z", "angle_deg": 45.0}
+    elif "bend" in ref:
+        dargs = {"mode": "bend", "axis": "z", "bend_axis": "x", "angle_deg": 30.0}
+    else:
+        dargs = {"mode": "taper", "axis": "z", "start_scale": 1.0, "end_scale": 0.78}
+    return _spec("deform_solid", [
+        {"id": "base", "op": "box", "args": {"size": [L, W, H]}},
+        {"id": "out", "op": "deform", "args": dargs, "inputs": ["base"]},
+    ])
+
+
+def t_morph_solid(d, opts=None):
+    """SDF shape interpolation between two solids via ``morph``."""
+    opts = opts or {}
+    ref = opts.get("ref_ops") or set()
+    L, W, H, R = max(4.0, d["L"]), max(4.0, d["W"]), max(4.0, d["H"]), max(4.0, d["R"])
+    if "torus" in ref:
+        return _spec("morph_solid", [
+            {"id": "a", "op": "torus",
+             "args": {"major_radius": R, "minor_radius": 0.28 * R}},
+            {"id": "b", "op": "torus",
+             "args": {"major_radius": R, "minor_radius": 0.22 * R}},
+            {"id": "out", "op": "morph",
+             "args": {"t": 0.5, "resolution": 22, "align_centers": True},
+             "inputs": ["a", "b"]},
+        ], segments=24)
+    return _spec("morph_solid", [
+        {"id": "a", "op": "box", "args": {"size": [L, W, H]}},
+        {"id": "b", "op": "cylinder",
+         "args": {"radius": 0.5 * min(L, W), "height": H}},
+        {"id": "out", "op": "morph",
+         "args": {"t": 0.5, "resolution": 24, "align_centers": True},
+         "inputs": ["a", "b"]},
+    ])
+
+
+def t_projection_extrude(d, opts=None):
+    """3D->2D projection followed by extrusion via ``projection_extrude``."""
+    opts = opts or {}
+    L, W, H = max(2.0, d["L"]), max(2.0, d["W"]), max(1.0, d["H"])
+    feats = [{"id": "base", "op": "box", "args": {"size": [L, W, max(H, 8.0)]}}]
+    src = "base"
+    if opts.get("holes", False) and not opts.get("blind_hole", False):
+        r = min(d.get("R") or 0.18 * min(L, W), 0.40 * min(L, W))
+        feats += [
+            {"id": "bore", "op": "cylinder",
+             "args": {"radius": max(0.4, r), "height": max(H, 8.0) * 2.0,
+                      "center": [0, 0, 0]}},
+            {"id": "cut", "op": "difference", "args": {}, "inputs": ["base", "bore"]},
+        ]
+        src = "cut"
+    feats.append({
+        "id": "out", "op": "projection_extrude",
+        "args": {"thickness": H, "cut": False, "axis": "z", "center": True},
+        "inputs": [src],
+    })
+    return _spec("projection_extrude", feats)
+
+
+def t_offset_solid(d, opts=None):  # noqa: ARG001
+    """Signed surface offset via ``offset``."""
+    L, W, H = max(3.0, d["L"]), max(3.0, d["W"]), max(3.0, d["H"])
+    r = max(0.4, min(0.12 * min(L, W, H), 3.0))
+    return _spec("offset_solid", [
+        {"id": "core", "op": "box",
+         "args": {"size": [L - 2.0 * r, W - 2.0 * r, H - 2.0 * r]}},
+        {"id": "out", "op": "offset",
+         "args": {"distance": r, "mode": "mitre"}, "inputs": ["core"]},
+    ])
+
+
+def t_field_tree_solid(d, opts=None):
+    """Nested scalar field expression tree via ``field_tree``."""
+    opts = opts or {}
+    ref = opts.get("ref_ops") or set()
+    L, W, H, R = max(6.0, d["L"]), max(6.0, d["W"]), max(6.0, d["H"]), max(6.0, d["R"])
+    if "torus" in ref:
+        return _spec("field_tree_solid", [{"id": "out", "op": "field_tree", "args": {
+            "tree": {"op": "torus", "major_radius": R, "minor_radius": 0.25 * R},
+            "bounds": [[-1.6 * R, -1.6 * R, -0.6 * R], [1.6 * R, 1.6 * R, 0.6 * R]],
+            "spacing": max(0.8, R / 10.0),
+        }}])
+    return _spec("field_tree_solid", [{"id": "out", "op": "field_tree", "args": {
+        "tree": {"op": "smooth_union", "radius": max(1.0, 0.08 * min(L, W, H)),
+                 "children": [
+                     {"op": "box", "size": [L, W, H]},
+                     {"op": "sphere", "radius": 0.45 * min(L, W, H)},
+                 ]},
+        "bounds": [[-0.75 * L, -0.75 * W, -0.75 * H], [0.75 * L, 0.75 * W, 0.75 * H]],
+        "spacing": max(1.0, min(L, W, H) / 10.0),
+    }}])
+
+
+def t_smooth_subdiv_solid(d, opts=None):
+    """Subdivision, smooth SDF blend, or Taubin smoothing/remesh via native ops."""
+    opts = opts or {}
+    ref = opts.get("ref_ops") or set()
+    L, W, H = max(4.0, d["L"]), max(4.0, d["W"]), max(4.0, d["H"])
+    if ref & {"subdiv", "subdivide"}:
+        return _spec("smooth_subdiv_solid", [
+            {"id": "base", "op": "box", "args": {"size": [L, W, H]}},
+            {"id": "out", "op": "subdivide",
+             "args": {"scheme": "catmull_clark", "levels": 1}, "inputs": ["base"]},
+        ])
+    if "remesh" in ref:
+        return _spec("smooth_subdiv_solid", [
+            {"id": "base", "op": "box", "args": {"size": [L, W, H]}},
+            {"id": "sub", "op": "subdivide",
+             "args": {"scheme": "simple", "levels": 2}, "inputs": ["base"]},
+            {"id": "out", "op": "repair",
+             "args": {"smooth": 1, "target_faces": 120}, "inputs": ["sub"]},
+        ])
+    if ref & {"sdf", "lipschitz", "hg_sdf"}:
+        return _spec("smooth_subdiv_solid", [{"id": "out", "op": "field_tree", "args": {
+            "tree": {"op": "smooth_union", "radius": max(1.0, 0.1 * min(L, W, H)),
+                     "children": [
+                         {"op": "box", "size": [L, W, H]},
+                         {"op": "sphere", "radius": 0.45 * min(L, W, H)},
+                     ]},
+            "bounds": [[-0.75 * L, -0.75 * W, -0.75 * H],
+                       [0.75 * L, 0.75 * W, 0.75 * H]],
+            "spacing": max(1.0, min(L, W, H) / 10.0),
+        }}])
+    return _spec("smooth_subdiv_solid", [
+        {"id": "base", "op": "box", "args": {"size": [L, W, H]}},
+        {"id": "sub", "op": "subdivide",
+         "args": {"scheme": "simple", "levels": 1}, "inputs": ["base"]},
+        {"id": "out", "op": "repair", "args": {"smooth": 2}, "inputs": ["sub"]},
     ])
 
 
@@ -672,6 +1008,18 @@ TEMPLATES_DIMS = {
     "gyroid_slab": [("x", 0, 1.0), ("y", 1, 1.0), ("z", 2, 1.0)],
     "sdf_field": [("x", 0, 1.0), ("y", 1, 1.0), ("z", 2, 1.0)],
     "text_plate": [("x", 0, 1.0), ("y", 1, 1.0), ("t", 2, 1.0)],
+    "shape_grammar": [],
+    "lsystem_tree": [],
+    "hull_solid": [("x", 0, 1.0), ("y", 1, 1.0), ("z", 2, 1.0)],
+    "minkowski_solid": [("x", 0, 1.0), ("y", 1, 1.0), ("z", 2, 1.0)],
+    "polyhedron_solid": [("x", 0, 1.0), ("y", 1, 1.0), ("z", 2, 1.0)],
+    "heightmap_solid": [("x", 0, 1.0), ("y", 1, 1.0), ("z", 2, 1.0)],
+    "deform_solid": [("z", 2, 1.0)],
+    "morph_solid": [],
+    "projection_extrude": [("x", 0, 1.0), ("y", 1, 1.0), ("z", 2, 1.0)],
+    "offset_solid": [("x", 0, 1.0), ("y", 1, 1.0), ("z", 2, 1.0)],
+    "field_tree_solid": [],
+    "smooth_subdiv_solid": [],
 }
 
 #: template id -> (build, covers, expected_genus|None, required_any)
@@ -688,7 +1036,7 @@ TEMPLATES = OrderedDict([
     ("revolve_solid", (t_revolve_solid, {"revolve", "transform", "cylinder"}, None,
                        {"revolve", "lathe"})),
     ("revolve_shell", (t_revolve_shell, {"revolve", "difference", "shell", "hole",
-                                         "cylinder", "thicken"}, 0,
+                                         "cylinder", "thicken", "transform"}, 0,
                        {"revolve", "lathe"})),
     ("loft_stack", (t_loft_stack, {"loft", "transform", "sweep"}, None,
                     {"loft"})),
@@ -696,6 +1044,7 @@ TEMPLATES = OrderedDict([
                     {"sweep", "path"})),
     ("extrude_profile", (t_extrude_profile, {"extrude", "cylinder", "difference",
                                              "pattern_polar", "hole", "teeth",
+                                             "add_interiors", "add_interior",
                                              "transform"}, None,
                          {"extrude", "profile"})),
     ("polar_array_cut", (t_polar_array_cut, {"cylinder", "pattern_polar", "difference",
@@ -711,19 +1060,72 @@ TEMPLATES = OrderedDict([
                          {"sphere", "cone"})),
     ("torus_ring", (t_torus_ring, {"torus", "difference", "transform"}, None,
                     {"torus"})),
-    ("gyroid_slab", (t_gyroid_slab, {"gyroid", "lattice", "surface", "sdf",
+    ("gyroid_slab", (t_gyroid_slab, {"gyroid", "gyroid3d", "lattice", "sdf",
+                                     "sdf3", "box", "intersection",
                                      "transform"}, None,
-                     {"lattice", "gyroid", "tpms", "schwarz", "surface", "sdf"})),
+                     {"lattice", "gyroid", "gyroid3d", "tpms", "schwarz", "neovius"})),
     ("sdf_field", (t_sdf_field, {"sdf", "lattice", "lipschitz", "tpms",
-                                  "schwarz", "surface", "offset", "smooth",
-                                  "morph", "mandelbulb", "iterate", "fractal"},
+                                  "schwarz", "neovius", "box", "intersection",
+                                  "shell", "offset", "smooth", "mandelbulb",
+                                  "iterate", "fractal"},
                    None,
                    {"sdf", "lipschitz", "mandelbulb", "iterate", "schwarz",
-                    "tpms", "surface"})),
+                    "neovius", "tpms"})),
     ("text_plate", (t_text_plate, {"text_emboss", "text_engrave", "extrude",
                                    "union", "transform"}, None,
                     {"text", "text_emboss", "text_engrave", "vectortext",
                      "glyphcurve", "glyph"})),
+    ("shape_grammar", (t_shape_grammar, {"shape_grammar", "rule", "startshape",
+                                         "cf::symmetry", "mirror", "flip", "loop",
+                                         "rand", "pattern_polar", "pattern_linear",
+                                         "box", "cylinder", "sphere", "cone",
+                                         "transform", "union"}, 0,
+                       {"shape_grammar", "rule", "startshape", "cf::symmetry"})),
+    ("lsystem_tree", (t_lsystem_tree, {"lsystem", "turtle", "rule", "startshape",
+                                       "sweep", "cylinder", "sphere", "transform",
+                                       "union"}, 0,
+                      {"lsystem", "turtle", "l_system", "axiom"})),
+    ("hull_solid", (t_hull_solid, {"hull", "box", "cylinder", "sphere", "cone",
+                                   "transform", "mirror", "union", "difference"},
+                    None, {"hull"})),
+    ("minkowski_solid", (t_minkowski_solid, {"minkowski", "box", "sphere",
+                                             "cylinder", "cone", "polyhedron",
+                                             "transform", "difference", "union"},
+                         None, {"minkowski"})),
+    ("polyhedron_solid", (t_polyhedron_solid, {"polyhedron", "box", "cylinder",
+                                               "sphere", "difference", "union",
+                                               "transform"},
+                          None, {"polyhedron"})),
+    ("heightmap_solid", (t_heightmap_solid, {"heightmap", "surface", "box",
+                                             "transform"}, 0,
+                         {"heightmap", "surface"})),
+    ("deform_solid", (t_deform_solid, {"deform", "twist", "bend", "box",
+                                       "cylinder", "extrude", "transform",
+                                       "union", "difference"}, 0,
+                      {"deform"})),
+    ("morph_solid", (t_morph_solid, {"morph", "box", "cylinder", "sphere", "torus",
+                                     "difference", "union", "transform", "sdf"},
+                     None, {"morph"})),
+    ("projection_extrude", (t_projection_extrude, {"projection", "projection_extrude",
+                                                   "extrude", "box", "cylinder",
+                                                   "difference", "union", "transform",
+                                                   "shell"}, None,
+                            {"projection", "projection_extrude"})),
+    ("offset_solid", (t_offset_solid, {"offset", "box", "cylinder", "sphere",
+                                       "shell", "chamfer", "fillet", "transform",
+                                       "union", "difference"}, 0,
+                      {"offset"})),
+    ("field_tree_solid", (t_field_tree_solid, {"libfive_tree", "field_tree", "sdf",
+                                               "torus", "sphere", "box", "cylinder",
+                                               "union", "difference", "intersection",
+                                               "smooth", "offset", "transform"},
+                          None, {"libfive_tree", "field_tree"})),
+    ("smooth_subdiv_solid", (t_smooth_subdiv_solid, {"smooth", "subdiv", "subdivide",
+                                                     "remesh", "sdf", "lipschitz",
+                                                     "box", "sphere", "cylinder",
+                                                     "union", "difference",
+                                                     "transform"}, 0,
+                             {"smooth", "subdiv", "subdivide", "remesh"})),
 ])
 
 
@@ -731,8 +1133,8 @@ def pick_template(record):
     """Choose the template whose op coverage best matches the record's own ops.
 
     Deterministic: highest covered fraction, ties broken by the template that
-    covers more ops, then by id.  Never inspects the family name -- that would
-    be a recipe in disguise.
+    covers more ops, then earlier registration order.  Never inspects the
+    family name or case id -- that would be a recipe in disguise.
     """
     ops = [_norm(o) for o in (record.get("operations") or []) if o]
     raw = [_norm(o) for o in (record.get("raw_ops") or []) if o]
@@ -746,7 +1148,7 @@ def pick_template(record):
                 continue
             hit = len(ref & covers)
             score = hit / float(len(ref))
-            tiebreak = (score, hit, -len(TEMPLATES) + list(TEMPLATES).index(tid))
+            tiebreak = (score, hit, -list(TEMPLATES).index(tid))
             if best is None or tiebreak > best_score:
                 best, best_score = tid, tiebreak
         if best is not None:
@@ -1127,8 +1529,11 @@ def build_case(rec, idx):
                 break
     template_opts = {
         "holes": hole_evidence(rec),
+        "blind_hole": (any("blind" in o for o in raw_ops)
+                       and not any("through" in o for o in raw_ops)),
         "inner_loops": bool(raw_ops & {"add_interiors", "inner", "interior",
                                        "add_interior"}),
+        "ref_ops": ref,
         "text": text_value,
         # Declared parameter values are evidence about the reference part; a
         # template may consume them (period, thickness, clip radius), but never
@@ -1674,7 +2079,18 @@ def _stage(case):
     return "express"
 
 
+def _verify_native_ops():
+    """Confirm every op declared in NATIVE_OP_ALIASES is live in FEATURE_OPS."""
+    from atta import families, features  # noqa: F401
+    missing = {k: v for k, v in NATIVE_OP_ALIASES.items()
+               if v not in features.FEATURE_OPS}
+    if missing:
+        raise RuntimeError("NATIVE_OP_ALIASES references unregistered ops: %s" % missing)
+    return sorted(features.FEATURE_OPS.keys())
+
+
 def protocol_doc(n_cases=None):
+    live_ops = _verify_native_ops()
     return {
         "name": BENCH_VERSION,
         "requirement": "docs/SHAPE_COVERAGE.md (held-out bench section)",
@@ -1689,6 +2105,8 @@ def protocol_doc(n_cases=None):
                           % (100 * MAX_VARIANT_FRACTION)),
         "excluded_families": {k: v for k, v in EXCLUDED_FAMILIES.items()},
         "native_ops": sorted(NATIVE_OPS),
+        "native_op_aliases": dict(sorted(NATIVE_OP_ALIASES.items())),
+        "live_feature_ops_count": len(live_ops),
         "constructible_ops": CONSTRUCTIBLE_OPS,
         "missing_ops": MISSING_OPS,
         "templates": {k: {"covers": sorted(v[1]), "declared_genus": v[2]}
