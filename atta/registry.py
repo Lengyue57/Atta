@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import copy
 import math
+import threading
 
 from .errors import AttaError
 from .features import _eval_expr
 
-__all__ = ["ParamSpec", "Recipe", "Resolved", "recipe", "register", "get",
-           "all_recipes", "REGISTRY"]
+__all__ = ["ParamSpec", "Recipe", "Resolved", "GenusRule", "evaluate_genus", "recipe",
+           "register", "get", "all_recipes", "REGISTRY"]
 
 _LENGTH = {"mm": 1e-3, "cm": 1e-2, "m": 1.0, "in": 0.0254}
 _UNITLESS = ("none", "ratio", "count", "deg")
@@ -88,24 +89,117 @@ class ParamSpec:
 
 
 class Resolved:
-    """Resolved values: ``display`` in recipe units, ``values`` in metres."""
+    """Resolved values: ``display`` in recipe units, ``values`` in metres.
 
-    __slots__ = ("values", "display", "issues", "applied_patches", "blocked")
+    ``expected_genus`` is the recipe's genus rule evaluated on *these* values
+    (``None`` when the recipe declares no genus).
+    """
 
-    def __init__(self, values, display, issues=None, applied_patches=None, blocked=False):
+    __slots__ = ("values", "display", "issues", "applied_patches", "blocked",
+                 "expected_genus")
+
+    def __init__(self, values, display, issues=None, applied_patches=None, blocked=False,
+                 expected_genus=None):
         self.values = dict(values)
         self.display = dict(display)
         self.issues = list(issues or [])
         self.applied_patches = list(applied_patches or [])
         self.blocked = bool(blocked)
+        self.expected_genus = expected_genus
 
     def to_dict(self):
         return {"values": self.values, "display": self.display, "issues": self.issues,
-                "applied_patches": self.applied_patches, "blocked": self.blocked}
+                "applied_patches": self.applied_patches, "blocked": self.blocked,
+                "expected_genus": self.expected_genus}
+
+
+# ---------------------------------------------------------------- genus rules
+
+class GenusRule:
+    """A genus that is a function of the resolved parameters.
+
+    ``fn`` receives the *display* values (recipe units: mm, counts, deg) and
+    returns an integer genus, or ``None`` when no claim can be made for that
+    parameter set (verify then skips the genus check instead of asserting a
+    number nobody derived).  ``text`` is the human/LLM-readable formula that
+    ``to_dict`` publishes, so an agent can see *why* the genus moves.
+    """
+
+    __slots__ = ("fn", "text")
+
+    def __init__(self, fn, text=""):
+        if not callable(fn):
+            raise AttaError("bad_arg", "GenusRule needs a callable", path="expected_genus",
+                            fix="pass a function of the display params")
+        self.fn = fn
+        self.text = str(text or getattr(fn, "__doc__", "") or getattr(fn, "__name__", "fn"))
+
+    def __call__(self, display):
+        return self.fn(dict(display))
+
+
+def _is_static_genus(rule):
+    return rule is None or (isinstance(rule, (int, float)) and not isinstance(rule, bool))
+
+
+def evaluate_genus(rule, display, recipe_id="recipe"):
+    """Evaluate a genus rule (int | expression string | callable) on display values.
+
+    * ``int``      -> itself (the legacy constant).
+    * ``str``      -> a safe arithmetic expression over the param names, e.g.
+                      ``"1 + bolt_holes"`` or ``"rows * cols"`` (same evaluator
+                      and function set as recipe constraints; no ``eval``).
+    * callable     -> ``fn(display) -> int | None``.
+
+    The result must be a non-negative integer (or ``None`` from a callable);
+    anything else is a recipe bug and raises ``AttaError(code="bad_genus_rule")``
+    rather than silently disabling the genus check.
+    """
+    path = "%s.expected_genus" % recipe_id
+    if rule is None:
+        return None
+    if _is_static_genus(rule):
+        value = rule
+    elif isinstance(rule, str):
+        value = _eval_expr(rule, dict(display), path)
+    elif callable(rule):
+        try:
+            value = rule(dict(display))
+        except AttaError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise AttaError("bad_genus_rule", "genus rule failed: %s" % exc,
+                            path=path, fix="fix the expected_genus callable") from exc
+        if value is None:
+            return None
+    else:
+        raise AttaError("bad_genus_rule", "expected_genus must be an int, expression or callable",
+                        path=path, fix="use an int, a string like '1 + holes' or a GenusRule")
+    if isinstance(value, bool):
+        raise AttaError("bad_genus_rule", "genus rule returned a bool %r, not an integer" % (value,),
+                        path=path, fix="return a non-negative integer genus")
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        raise AttaError("bad_genus_rule", "genus rule returned a non-number %r" % (value,),
+                        path=path, fix="return an integer genus") from None
+    if not math.isfinite(f) or f < 0 or abs(f - round(f)) > 1e-9:
+        raise AttaError("bad_genus_rule", "genus rule returned %r, not a non-negative integer" % (value,),
+                        path=path, fix="return an integer genus (or None for 'no claim')")
+    return int(round(f))
 
 
 class Recipe:
-    """A named parametric family with a deterministic builder."""
+    """A named parametric family with a deterministic builder.
+
+    ``expected_genus`` may be a constant, an expression string over the
+    parameter names or a callable/:class:`GenusRule` of the display values.
+    Reading ``recipe.expected_genus`` returns the genus for the parameter set
+    most recently resolved or built **on the calling thread** (the engine and
+    the coverage gate always ``resolve`` -> ``build_shape`` -> read), falling
+    back to the nominal preset.  Race-free callers should use
+    ``Resolved.expected_genus`` or :meth:`genus_for`.
+    """
 
     def __init__(self, id, name, description, params, presets=None, constraints=None,
                  expected_genus=0, material="ceramic", tags=None, build=None):
@@ -115,10 +209,74 @@ class Recipe:
         self.params = {str(k): ParamSpec.from_dict(v) for k, v in dict(params).items()}
         self.presets = copy.deepcopy(dict(presets or {}))
         self.constraints = copy.deepcopy(list(constraints or []))
-        self.expected_genus = expected_genus
+        self._local = threading.local()
+        self._genus_rule = expected_genus
         self.material = str(material)
         self.tags = list(tags or [])
         self.build = build
+
+    # -- genus ---------------------------------------------------------------
+    @property
+    def genus_rule(self):
+        """The declared rule (int, expression string, or callable)."""
+        return self._genus_rule
+
+    @property
+    def genus_is_parametric(self):
+        return not _is_static_genus(self._genus_rule)
+
+    def genus_for(self, display):
+        """Genus for a full or partial set of display values (defaults fill gaps)."""
+        full = self._nominal_display()
+        full.update(dict(display or {}))
+        return evaluate_genus(self._genus_rule, full, self.id)
+
+    def _nominal_display(self):
+        raw = {k: spec.default for k, spec in self.params.items()}
+        raw.update(self.presets.get("nominal", {}))
+        out = {}
+        for key, spec in self.params.items():
+            try:
+                out[key] = spec.coerce(raw.get(key, spec.default))
+            except (TypeError, ValueError):
+                out[key] = spec.default
+        return out
+
+    def _display_from_values(self, values):
+        """Invert ``resolve``'s unit conversion (metres -> recipe units)."""
+        out = {}
+        for key, val in dict(values or {}).items():
+            spec = self.params.get(key)
+            if (spec is not None and spec.unit in _LENGTH and not isinstance(val, bool)
+                    and isinstance(val, (int, float))):
+                out[key] = val / _LENGTH[spec.unit]
+            else:
+                out[key] = val
+        return out
+
+    @property
+    def expected_genus(self):
+        if not self.genus_is_parametric:
+            return self._genus_rule
+        if getattr(self._local, "has", False):
+            return self._local.genus
+        return self.genus_for({})
+
+    @expected_genus.setter
+    def expected_genus(self, value):
+        # Legacy builders publish a derived genus by assignment.  For a static
+        # recipe that replaces the constant (old behaviour); for a parametric
+        # one it only records the value for this thread's current build, so a
+        # publish can never overwrite the rule for the next parameter set.
+        if self.genus_is_parametric and _is_static_genus(value):
+            self._remember(value)
+            return
+        self._genus_rule = value
+        self._local.has = False
+
+    def _remember(self, genus):
+        self._local.genus = genus
+        self._local.has = True
 
     def resolve(self, patch=None, preset="nominal") -> Resolved:
         patch = dict(patch or {})
@@ -197,19 +355,40 @@ class Recipe:
                                "fix": con.get("fix")})
                 if sev == "error":
                     blocked = True
-        return Resolved(values, display, issues, applied, blocked)
+        genus = None
+        if self._genus_rule is not None:
+            try:
+                genus = evaluate_genus(self._genus_rule, display, self.id)
+            except AttaError as exc:
+                issues.append({"code": exc.code, "severity": "error", "path": exc.path,
+                               "message": exc.message, "fix": exc.fix})
+                blocked = True
+        if self.genus_is_parametric:
+            self._remember(genus)
+        return Resolved(values, display, issues, applied, blocked, expected_genus=genus)
 
     def build_shape(self, values, quality="draft"):
         if self.build is None:
             raise AttaError("no_builder", "recipe %s has no builder" % self.id,
                             path="recipe", fix="choose a registered recipe")
+        if self.genus_is_parametric:
+            # the genus that verify will compare against is the one for the
+            # values actually being built, not whatever was resolved last
+            self._remember(self.genus_for(self._display_from_values(values)))
         return self.build(dict(values), str(quality))
 
     def to_dict(self, verbose=False):
         out = {"id": self.id, "name": self.name, "description": self.description,
                "tags": list(self.tags), "presets": list(self.presets),
-               "n_params": len(self.params), "expected_genus": self.expected_genus,
+               "n_params": len(self.params),
+               "expected_genus": (self.genus_for({}) if self.genus_is_parametric
+                                  else self._genus_rule),
                "material": self.material}
+        if self.genus_is_parametric:
+            rule = self._genus_rule
+            out["expected_genus_rule"] = (rule if isinstance(rule, str)
+                                          else getattr(rule, "text", None)
+                                          or getattr(rule, "__name__", "callable"))
         if verbose:
             out["params"] = {k: v.to_dict() for k, v in self.params.items()}
             out["presets"] = copy.deepcopy(self.presets)
