@@ -66,7 +66,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)) // .../plugin/lib
 const NL = String.fromCharCode(10)
-const VERSION = '1.2.2-beta.3'
+const VERSION = '1.2.3-beta.1'
 const PLUGIN_NAME = '@atta/dsh-atta'
 const DIAGNOSTIC_TOOL = 'atta_plugin_status'
 
@@ -1049,10 +1049,11 @@ function toolSpecs() {
     {
       name: 'atta_spec',
       description:
-        '[Atta v' + VERSION + '] Spec v3 entry: validate (no geometry), propose (deterministic design defaults + assumption_ledger + unresolved), compile (resolved params/features), schema (field documentation). model.kind may be recipe, graph, or assembly.',
+        '[Atta v' + VERSION + '] Spec v3 entry: validate (no geometry), preflight (fast lint), propose (deterministic design defaults + assumption_ledger + unresolved), compile (resolved params/features), patch (locate-then-infill edit), schema (field documentation). model.kind may be recipe, graph, or assembly.',
       parameters: {
-        op: { type: 'string', enum: ['validate', 'propose', 'compile', 'schema'], default: 'validate', description: 'validate | propose | compile | schema' },
+        op: { type: 'string', enum: ['validate', 'propose', 'compile', 'schema', 'patch', 'preflight'], default: 'validate', description: 'validate | propose | compile | schema | patch | preflight' },
         spec: { ...JSON_OBJECT, description: 'Atta Spec v3 JSON' },
+        patches: { ...JSON_OBJECT, description: 'locate-then-infill patches (used when op=patch)' },
         assume: { type: 'boolean', description: 'validate with design defaults filled in' },
       },
     },
@@ -1099,7 +1100,7 @@ function toolSpecs() {
     {
       name: 'atta_describe',
       description:
-        '[Atta v' + VERSION + '] Measured structure + text perception: bbox/volume/topology/wall/curvature and probes. perceive=true returns low-power ASCII silhouettes, sections and shape traits without rendering; trace=true returns construction steps; compare_to=<model_id> returns silhouette IoU and +/- diff. Read these before looking at images.',
+        '[Atta v' + VERSION + '] Measured structure + text perception: bbox/volume/topology/wall/curvature/SIR/DangEL/FluxEE and probes. perceive=true returns low-power ASCII silhouettes, sections and shape traits without rendering; trace=true returns construction steps; compare_to=<model_id> returns silhouette IoU, +/- diff, and 3D metrics (chamfer_mm, hausdorff_p95_mm, volumetric_iou). Read these before looking at images.',
       parameters: {
         model_id: { type: 'string', description: 'model id; current model when omitted' },
         probe: { description: 'probe name, array, or {"op":"raycast","axis":"z","res":[32,32]}', oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }, JSON_OBJECT] },
@@ -1156,10 +1157,10 @@ function toolSpecs() {
     {
       name: 'atta_deliver',
       description:
-        '[Atta v' + VERSION + '] Delivery: verify first; fail blocks, degraded needs allow_degraded=true. Exports GLB/OBJ/STL plus a manifest with sha256 and the verify receipt. Assembly models export a named-part GLB plus per-part OBJ/STL and an assembly receipt.',
+        '[Atta v' + VERSION + '] Delivery: verify first; fail blocks, degraded needs allow_degraded=true. Exports GLB/OBJ/STL/DXF/SVG drawing plus a manifest with sha256 and the verify receipt. Assembly models export a named-part GLB plus per-part OBJ/STL and an assembly receipt.',
       parameters: {
         model_id: { type: 'string', description: 'model id; current model when omitted' },
-        formats: { type: 'array', items: { type: 'string' }, description: 'glb/obj/stl/blend/step; default glb,obj' },
+        formats: { type: 'array', items: { type: 'string' }, description: 'glb/obj/stl/blend/step/dxf/svg_drawing; default glb,obj' },
         outdir: { type: 'string', description: 'output directory (default _atta/out)' },
         allow_degraded: { type: 'boolean', description: 'permit delivery on degraded' },
         name: { type: 'string', description: 'export filename stem' },
@@ -1192,10 +1193,10 @@ function toolSpecs() {
     {
       name: 'atta_design',
       description:
-        '[Atta v' + VERSION + '] Design-rule check: verify only judges whether the shape is a valid solid; design judges whether the form reads and can be made — silhouette readability at small scale, negative space, three-level form hierarchy, proportion, symmetry, printability (min wall/overhang), moldability (draft angle), machinability (inside corner radius). Each rule returns ok/value/advice; ok=null means not applicable. A model can pass verify and still fail here.',
+        '[Atta v' + VERSION + '] Design-rule check: verify only judges whether the shape is a valid solid; design judges whether the form reads and can be made — silhouette readability at small scale, negative space, three-level form hierarchy, proportion, symmetry, stability (COM vs base support hull), printability (min wall/overhang), moldability (draft angle), machinability (inside corner radius). Each rule returns ok/value/advice; ok=null means not applicable. A model can pass verify and still fail here.',
       parameters: {
         model_id: { type: 'string', description: 'model id; current model when omitted' },
-        rules: { type: 'array', items: { type: 'string' }, description: 'readability/negative_space/form_hierarchy/proportion/symmetry/printability/moldability/machinability' },
+        rules: { type: 'array', items: { type: 'string' }, description: 'readability/negative_space/form_hierarchy/proportion/symmetry/stability/printability/moldability/machinability' },
         target_size_mm: { type: 'array', items: { type: 'number' }, description: 'target bounding box [x,y,z] mm for the proportion check' },
         min_wall_mm: { type: 'number', default: 0.8, description: 'minimum printable wall' },
         max_overhang_deg: { type: 'number', default: 45, description: 'maximum unsupported overhang angle' },

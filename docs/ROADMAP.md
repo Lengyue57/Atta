@@ -9,10 +9,10 @@ is explicitly not, so a reader can tell capability from aspiration.
 | Dimension | State | Evidence |
 |---|---|---|
 | Geometry | strong | 46 closed recipes (all pass `verify` at `standard` across `safe`/`nominal`/`hero`); 56 feature ops (incl. `shape_grammar`, `lsystem`, `hull`, `minkowski`, `polyhedron`, `heightmap`, `deform`, `morph`, `projection_extrude`, composable `gyroid`/`sdf`/`field_tree`, `extrude(holes_xy)`); boolean via manifold3d |
-| Verification | strong | three-state receipt; topology, wall, dihedral, curvature, constraints; coverage-matrix gate + full preset-matrix CI + parametric `expected_genus` |
-| Engineering | medium→strong | bbox/volume/wall/clearance/interference; assembly interference/clearance; no tolerance stack yet |
-| Interoperability | strong (subset) | analytic STEP via build123d/OCCT for box/cylinder/sphere/cone/torus/revolve/extrude/boolean/transform/mirror/pattern; mesh-only ops fail with a fix, never a fake STEP |
-| Agent UX | strong | 10 verbs; MCP/DSH/HTTP; `fix` on every failure; solver and assembly reuse the same verbs |
+| Verification | strong | three-state receipt; topology, SIR/DangEL/FluxEE, wall, dihedral, curvature, constraints + `mesh_agreement`; coverage-matrix gate + full preset-matrix CI + parametric `expected_genus` |
+| Engineering | strong | bbox/volume/wall/clearance/interference, 3D Chamfer/Hausdorff/IoU diff, 2D DXF/SVG drawings, `stability` design rule; assembly interference/clearance; no tolerance stack yet |
+| Interoperability | strong (subset) | analytic STEP via build123d/OCCT for box/cylinder/sphere/cone/torus/revolve/extrude(segments)/fillet/chamfer/boolean/transform/mirror/pattern + 2D DXF/SVG drawings; mesh-only ops fail with a fix, never a fake STEP |
+| Agent UX | strong | 12 verbs (`atta_*`); MCP/Antigravity/ZCode/DSH/HTTP; `fix` on every failure; `patch`/`preflight` graph editing; `_clean_args` drop warnings; solver and assembly reuse the same verbs |
 | Spatial sense | strong | text/ASCII perception pack (views/sections/traits/trace/diff), ray grids, clearance, inside/nearest, assembly placements/DOF |
 | Parameter solving | strong | LHS + compass + Nelder-Mead + differential evolution + LM/SLSQP polish; targets, sensitivity, closest-achievable, Pareto; assembly-level `part.param` |
 | Shape range | broad | 46 recipes across 11 of the 12 categories (≥3 per targeted category); 12/12 corpus categories above target; v1 100%, v2 98.1%, blind v2_fresh 89.7% verify |
@@ -90,12 +90,14 @@ the render round-trip from the shape-iteration loop. `verify` remains the gate.
    "move this variable" recommendations with side effects. Every evaluation is
    a real draft build; constraints use verify semantics.
 
-3. **Feature depth (partly done).**
-   `extrude(holes_xy=...)` cuts real through-holes; `gyroid` and a general
-   `sdf` op (gyroid / Schwarz P / Neovius / Mandelbulb / primitive fields) are
-   composable implicit ops; `offset` and `text_engrave`/`text_emboss` are
-   registered. Still missing: kernel fillet/chamfer, ribs/bosses, shell with
-   openings, and exact reference genus on the remaining TPMS/fractal cases.
+3. **Feature depth (mostly done).**
+   `extrude(holes_xy=...)` cuts real through-holes; `extrude`/`revolve` accept
+   typed 2D `segments` (`line`/`arc`/`tangent_arc`/`circle`); `fillet`/`chamfer`
+   run on the exact OCCT B-rep closure with topological face `tags` and
+   `common_edge_of`/`on_face`/`from_feature` selectors; `gyroid`, `sdf`,
+   `sdf_blend`, `field_tree`, `nurbs_surface`, `shape_grammar`, `lsystem`, and
+   `text_engrave`/`text_emboss` are registered. Still missing: ribs/bosses,
+   shell with openings, and exact reference genus on the remaining TPMS/fractal cases.
 
 ## Phase 3 — precision and scale
 
@@ -106,26 +108,35 @@ the render round-trip from the shape-iteration loop. `verify` remains the gate.
    clipping, contrast, entropy, colourfulness, edge density, key/fill). The
    analysis warns; it never returns a geometry verdict.
 
-5. **B-rep backend behind the same spec (done for a subset).**
-   A graph whose ops are box/cylinder/sphere/cone/torus/revolve/extrude/
-   boolean/transform/mirror/pattern routes to build123d/OCCT and delivers an
-   analytic STEP. Mesh-only ops fail with `brep_unsupported` and a fix; the
-   verdict still comes from the mesh verify receipt. The agent surface is
-   unchanged.
+5. **B-rep & 2D drawing backend behind the same spec (done for a subset).**
+   A graph whose ops map onto build123d/OCCT (`box`, `cylinder`, `sphere`,
+   `cone`, `torus`, `revolve`, `extrude` including `segments` arcs, `fillet`,
+   `chamfer`, booleans, transforms, mirror, patterns) delivers an analytic STEP
+   and OCCT HLR 2D drawings (`dxf`, `svg_drawing`, with pure-numpy `mesh_hlr`
+   fallback). Mesh-only ops fail STEP with `brep_unsupported` and a fix; the
+   verdict still comes from the mesh verify receipt.
 
-6. **Performance.**
+6. **Text-to-CAD verification & editing (done in v1.2.3beta).**
+   3D metrology (`self_intersection` SIR, `dangling_edge_length_mm`,
+   `flux_enclosure_error`), `probe.compare_meshes_3d` (`chamfer_mm`,
+   `hausdorff_p95_mm`, `volumetric_iou`), `constraints.mesh_agreement`,
+   locate-then-infill `patch_spec` / `preflight_spec`, `design.stability`, and
+   L0–L3 prompt-tier evaluation (`corpus/bench/generalization_v3_prompts.json`).
+
+7. **Performance (next).**
    Geometry cache by geometry hash, parallel variants in worker processes,
    optional GPU render, and a warm worker pool. Keep the fast loop under 100 ms
    for typical recipes.
 
 ## Phase 4 — product polish
 
-7. **Materials and finish receipts.** Thumbnails, material previews, and a
+8. **Materials and finish receipts.** Thumbnails, material previews, and a
    finish diff between draft and final.
-8. **Project workspaces.** Per-project `ATTA_HOME`, model listing, cleanup, and
+9. **Project workspaces.** Per-project `ATTA_HOME`, model listing, cleanup, and
    an export bundle with spec + receipt + manifest.
-9. **Host matrix.** Conformance tests that run the same 10-tool script against
-   MCP, DSH plugin, HTTP and a generic OpenAI manifest.
+10. **Host matrix (in progress).** Installers and smoke checks cover Antigravity,
+    ZCode, DSH plugin, Claude/Cursor MCP, and HTTP; add live cross-host
+    conformance tests running the 12-tool script across MCP, DSH, and HTTP.
 
 ## Non-goals
 

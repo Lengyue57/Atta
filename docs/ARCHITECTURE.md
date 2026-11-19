@@ -16,7 +16,7 @@ the ideas that survived contact with real work:
 
 It deliberately drops:
 
-* a large flat op surface as the agent interface (25 graph ops, 10 verbs);
+* an ungrouped flat op surface as the agent interface (56+ graph ops sit behind 12 semantic verbs);
 * GUI-mimicking click/selection scripts;
 * global `params.json` shared across projects;
 * model state that cannot be rebuilt from a spec;
@@ -25,27 +25,27 @@ It deliberately drops:
 ## 2. Layers
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│ agent hosts: ZCode MCP · DSH plugin · Claude · Cursor · HTTP │
-├──────────────────────────────────────────────────────────────┤
-│ agent/tools.py — 10 tool contracts (single source of truth)  │
-├──────────────────────────────────────────────────────────────┤
-│ engine.py — doctor/catalog/spec/model/variant/describe/...   │
-├──────────────────────────────────────────────────────────────┤
-│ spec.py — validate / propose / compile / hash                │
-│ recipes.py — curated parametric families                     │
-│ features.py — general DAG for fine modeling                  │
-├──────────────────────────────────────────────────────────────┤
-│ mesh.py · primitives · curves · surfaces · boolean           │
-│ (pure numpy; metres; no bpy)                                 │
-├──────────────────────────────────────────────────────────────┤
-│ analysis: metrology · probe · facts · verify · perception    │
-├──────────────────────────────────────────────────────────────┤
-│ blender: runtime · worker · finish · materials               │
-│ (bpy only here; finish, render, evaluate, export)            │
-├──────────────────────────────────────────────────────────────┤
-│ state.py — models.json, content-addressed artifacts          │
-└──────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────┐
+│ agent hosts: ZCode MCP · Antigravity · DSH plugin · Claude · Cursor · HTTP│
+├───────────────────────────────────────────────────────────────────────────┤
+│ agent/tools.py — 12 tool contracts (single source of truth)               │
+├───────────────────────────────────────────────────────────────────────────┤
+│ engine.py — doctor/catalog/spec/model/variant/describe/verify/deliver/... │
+├───────────────────────────────────────────────────────────────────────────┤
+│ spec.py — validate / preflight / propose / compile / patch / hash         │
+│ families/ — 46 curated parametric recipe modules                          │
+│ features.py — general DAG (56+ ops) for fine modeling                     │
+├───────────────────────────────────────────────────────────────────────────┤
+│ mesh.py · primitives · curves · surfaces · boolean · drawing              │
+│ (pure numpy; metres; no bpy)                                              │
+├───────────────────────────────────────────────────────────────────────────┤
+│ analysis: metrology · probe · facts · verify · perception · design        │
+├───────────────────────────────────────────────────────────────────────────┤
+│ blender: runtime · worker · finish · materials                            │
+│ (bpy only here; finish, render, evaluate, export)                         │
+├───────────────────────────────────────────────────────────────────────────┤
+│ state.py — models.json, content-addressed artifacts                       │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
 Rule: **bpy never leaks upward**. Geometry, facts, and verdicts are computable
@@ -115,12 +115,23 @@ Feature arguments are in **mm**; the evaluator converts to metres. Values may
 be `{"$param": "name"}` (resolved by `spec`) or `{"$expr": "w/2 + 4"}` (safe
 arithmetic over params).
 
-Graph ops are 25: 20 core primitive/CSG/transform/surface ops plus `offset`,
-`gyroid`, a general `sdf` field op (`gyroid`, `schwarz_p`, `neovius`,
-`mandelbulb`, `sphere`, `box`, `torus`), and `text_engrave`/`text_emboss`. `sdf` is sampled on a regular grid and extracted by marching
-tetrahedra; edge crossings are keyed by the exact integer node pair, so the
-result is closed without a distance-tolerance weld. See §7 for the solver view
-and §9 for the B-rep backend.
+Graph ops total 56+: core primitives (`box`, `cylinder`, `sphere`, `cone`,
+`torus`, `polyhedron`, `heightmap`), curves/surfaces (`revolve`, `loft`,
+`loft2`, `sweep`, `sweep2`, `pipe`, `coons`, `gordon`, `nurbs_surface`,
+`extrude`, `projection_extrude`, `thicken`, `offset`, `subdivide`, `repair`),
+exact CAD (`fillet`, `chamfer` with KCL-style face `tags` and `common_edge_of` /
+`on_face` / `from_feature` selectors), booleans & hulls (`union`, `weld_union`,
+`difference`, `intersection`, `hull`, `minkowski`), transforms/patterns/deform
+(`transform`, `mirror`, `pattern_linear`, `pattern_polar`, `deform`, `morph`),
+text & ornament (`lobes`, `text_engrave`, `text_emboss`), implicit & grammar ops
+(`gyroid`, `sdf`, `sdf_blend`, `field_tree`, `shape_grammar`, `lsystem`), and
+bio morphology (`capsid`, `branch_tree`, `pyramidal_neuron`, `diatom_frustule`,
+`perforated_valve`, `perforated_cylinder`, `lattice_shell`, `pore_field_shell`,
+`ring_stack`, `skeleton`, `silhouette`). `extrude` and `revolve` also accept
+declarative 2D `segments` (`line`, `arc`, `tangent_arc`, `circle`). `sdf` is
+sampled on a regular grid and extracted by marching tetrahedra; edge crossings
+are keyed by the exact integer node pair, so the result is closed without a
+distance-tolerance weld. See §7 for the solver view and §9 for the B-rep backend.
 
 ## 5. Verify semantics
 
@@ -135,8 +146,10 @@ no failed check          -> pass
 they are attached to the receipt as provenance.
 
 A verify receipt contains: `spec_hash`, `mesh_hash`, `level`, `verdict`,
-`score`, `checks[]`, `issues[]`, `metrics`, `facts`, `assumptions`,
-`exact: false` and `method`.
+`score`, `checks[]`, `issues[]`, `metrics` (including `self_intersection` /
+SIR, `dangling_edge_length_mm` / DangEL, `flux_enclosure_error` / FluxEE),
+`facts`, `assumptions`, `exact: false` and `method`. `constraints.mesh_agreement`
+evaluates 3D chamfer/Hausdorff/IoU agreement against a reference `target_model_id`.
 
 ## 6. Perception layer (no render)
 
@@ -153,7 +166,7 @@ ASCII sections
 trace
   recipe or feature-graph construction steps with per-step volume
 diff(compare_to)
-  silhouette IoU + ASCII + / - / #
+  silhouette IoU + ASCII + / - / # + 3D metrics (chamfer_mm, hausdorff_p95_mm, volumetric_iou)
 ```
 
 Cost is typically 0.1–0.3 s and never starts Blender. It is a **viewfinder**,
@@ -230,12 +243,16 @@ analytic cylinder, the axis, the radius, and the ability to fillet or tolerance
 the part downstream.
 
 * Supported ops: `box`, `cylinder`, `sphere`, `cone`, `torus`, `revolve`,
-  `extrude`, `union`, `difference`, `intersection`, `transform`, `mirror`,
-  `pattern_linear`, `pattern_polar`.
+  `extrude` (including typed `segments` with circular arcs), `union`,
+  `difference`, `intersection`, `transform`, `mirror`, `pattern_linear`,
+  `pattern_polar`, and `fillet`/`chamfer` (including topological edge
+  selectors `common_edge_of`, `on_face`, `from_feature`).
 * Unsupported ops raise `brep_unsupported` with a `fix`; there is no silent
   tessellated fallback.
-* `deliver(formats=["glb","obj","step"])` writes the mesh exports through
-  Blender and the STEP through build123d. The manifest records `backend`
+* `deliver(formats=["glb","obj","step","dxf","svg_drawing"])` writes the mesh
+  exports through Blender, STEP through build123d, and 2D multi-view
+  drawings through `atta.drawing` (OCCT `HLRBRep_Algo` when B-rep applies,
+  mesh HLR fallback otherwise). The manifest records `backend`
   (`mesh` or `brep+mesh`), the B-rep volume and the ops used.
 * The verdict is still the mesh `verify` receipt. STEP is a delivery format, not
   a second acceptance path; a future B-rep-native verify can be added behind the

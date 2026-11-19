@@ -1,9 +1,9 @@
 ---
 name: atta-modeling
-description: Use Atta 1.2.2beta through its twelve MCP tools for parametric 3D modeling, exact CAD, sampled NURBS, bounded fields, multi-part assemblies, bio morphology, measured inspection, verification and GLB/OBJ/STL/STEP delivery. Trigger when the user asks to create, edit, solve, assemble, inspect, validate or export a 3D model, or mentions Atta, CAD parts, mates, DOF, STEP, or "make it printable". For camera, texture or look work use the separate basid program.
+description: Use Atta 1.2.3beta through its twelve MCP tools for parametric 3D modeling, exact CAD, sampled NURBS, bounded fields, multi-part assemblies, bio morphology, 2D DXF/SVG drawings, measured inspection, verification and GLB/OBJ/STL/STEP delivery. Trigger when the user asks to create, edit, solve, assemble, inspect, validate or export a 3D model, or mentions Atta, CAD parts, mates, DOF, STEP, DXF, or "make it printable". For camera, texture or look work use the separate basid program.
 ---
 
-# Atta 1.2.2beta — modeling with receipts
+# Atta 1.2.3beta — modeling with receipts
 
 This is the **ZCode routing stub**. The authoritative procedure lives in one place:
 
@@ -71,18 +71,13 @@ The short version: closed manifold · genus matches · pass verdict · wall ≥ 
 minimum · every exposed hard edge beveled · reply carries model_id + verdict +
 dimensions + paths.
 
-## Kernel capabilities
+## Kernel capabilities (46 recipes, 56+ ops, 53 materials)
 
-Use `atta_catalog(feature=...)` before constructing the newer graph operations:
-`nurbs_surface` for sampled rational patches, `fillet/chamfer` for the supported
-exact CAD closure, `field_tree` for bounded scalar-field composition, and the
-bio morphology ops (`capsid`, `diatom_frustule`, `pyramidal_neuron`, …) for
-organic structures. Texture, camera and look work belongs to basid; call it
-through `atta.look` or its own MCP tool.
-Assemblies support oriented ports and `attach`; attachment initializes placement,
-while mates and verification determine constraint satisfaction. Source accuracy
-warnings survive booleans and assembly. Neither a sampled tolerance nor a
-closed mesh is an all-domain surface or manufacturing proof.
+Use `atta_catalog(feature=...)` before constructing graph operations:
+- **Exact CAD & sketches**: typed 2D `segments` (`line`, `arc`, `tangent_arc`, `circle`) on `extrude`/`revolve`, KCL-style face `tags` on primitives/`extrude`/`revolve`, and topological edge selectors (`common_edge_of`, `on_face`, `from_feature`) for `fillet`/`chamfer` with matching OCCT/STEP output.
+- **Surfaces, fields & grammars**: `nurbs_surface` for sampled rational patches, `field_tree` for bounded scalar-field composition, `shape_grammar`/`lsystem`/`hull`/`minkowski`/`deform`/`morph`/`projection_extrude` for procedural geometry, and the bio morphology ops (`capsid`, `diatom_frustule`, `pyramidal_neuron`, …).
+- **Metrology, 3D diff & graph patching**: `metrology` reports `self_intersection` (SIR), `dangling_edge_length_mm` (DangEL), and `flux_enclosure_error` (FluxEE); `describe(compare_to=...)` adds 3D `chamfer_mm`, `hausdorff_p95_mm`, and `volumetric_iou`; `atta_spec(op="patch"|"preflight")` and `atta_model(patches=...)` support locate-then-infill editing on graphs and assemblies; `atta_design` adds `stability` (COM vs support hull).
+- **Assemblies & look**: oriented ports and `attach` initialize placement, while mates/DOF and verification determine constraint satisfaction. Texture, camera and look work belongs to `basid` (`atta.look` or its own MCP tool). Source accuracy warnings survive booleans and assembly. Neither a sampled tolerance nor a closed mesh is an all-domain surface or manufacturing proof.
 
 ## Delivery
 
@@ -91,9 +86,12 @@ mesh-only omissions with delivery status `partial`; GLB can contain every part.
 Do not call that STEP a complete assembly. Real backend failures retain their
 original error codes.
 
-`atta_deliver(formats=["glb","obj"])`. STEP (`formats=["step"]`) is analytic B-rep
-for the graph subset; unsupported ops fail with `brep_unsupported` and a fix —
-there is never a fake tessellated STEP. The mesh verify receipt still gates delivery.
+`atta_deliver(formats=["glb","obj"])`. Also supports `dxf` and `svg_drawing`
+for 2D multi-view engineering drawings (OCCT HLR when B-rep applies, clean
+mesh HLR fallback otherwise). STEP (`formats=["step"]`) is analytic B-rep
+for the supported graph subset; unsupported ops fail with `brep_unsupported`
+and a fix — there is never a fake tessellated STEP. The mesh verify receipt
+still gates delivery.
 
 ## Style
 

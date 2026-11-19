@@ -8,5 +8,5 @@ SCHEMA_DELIVER = "atta.deliver/v3"
 SCHEMA_PREVIEW = "atta.preview/v3"
 SCHEMA_TOOLS = "atta.tools/v3"
 
-VERSION = "1.2.2b3"
+VERSION = "1.2.3b1"
 CODENAME = "geometry"

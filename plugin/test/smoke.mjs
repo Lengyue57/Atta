@@ -768,7 +768,7 @@ describe('8c. coexistence with the reference blender plugin (one shared profile)
 // ── 9. package manifest contract ─────────────────────────────────────────────
 describe('9. package manifest (what the DSH plugin manager actually reads)')
 
-check('version is 1.2.2-beta.3', PKG.version === '1.2.2-beta.3', String(PKG.version))
+check('version is 1.2.3-beta.1', PKG.version === '1.2.3-beta.1' && I.VERSION === PKG.version, String(PKG.version) + ' / ' + String(I.VERSION))
 check('package is ESM ("type": "module")', PKG.type === 'module', String(PKG.type))
 check('main points at the shipped entry', PKG.main === './lib/index.js', String(PKG.main))
 check('declares dsh.bundle.patch', Boolean(PKG.dsh && PKG.dsh.bundle && PKG.dsh.bundle.patch))
