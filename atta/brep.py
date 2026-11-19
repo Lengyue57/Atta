@@ -511,10 +511,11 @@ def _revolve(b, args, tags_dict=None):
                 end_faces.append(f)
                 continue
         side_faces.append(f)
+    side_list = side_faces or list(faces)
     roles = {
-        "start": start_faces, "bottom": start_faces, "base": start_faces,
-        "end": end_faces, "top": end_faces, "cap": end_faces,
-        "side": side_faces or faces, "wall": side_faces or faces, "walls": side_faces or faces,
+        "start": list(start_faces), "bottom": list(start_faces), "base": list(start_faces),
+        "end": list(end_faces), "top": list(end_faces), "cap": list(end_faces),
+        "side": list(side_list), "wall": list(side_list), "walls": list(side_list),
         "all": list(faces),
     }
     seg_tags = {}
@@ -524,7 +525,8 @@ def _revolve(b, args, tags_dict=None):
             matched = [f for f in faces if f.distance(p) < 1e-4]
             if matched:
                 seg_tags.setdefault(stag, []).extend(matched)
-                roles.setdefault(stag, []).extend(matched)
+                if stag not in roles:
+                    roles[stag] = list(matched)
     tag_map = {"tags": {**seg_tags, **_tag_faces_by_role(b, body, roles, tags_dict or {}, seg_tags)},
                "features": {}}
     rot_loc = _rotation(b, args.get("axis", "z"))
@@ -569,9 +571,9 @@ def _extrude(b, args, tags_dict=None):
         else:
             side_faces.append(f)
     roles = {
-        "start": start_faces, "bottom": start_faces, "base": start_faces,
-        "end": end_faces, "top": end_faces, "cap": end_faces,
-        "side": side_faces, "wall": side_faces, "walls": side_faces,
+        "start": list(start_faces), "bottom": list(start_faces), "base": list(start_faces),
+        "end": list(end_faces), "top": list(end_faces), "cap": list(end_faces),
+        "side": list(side_faces), "wall": list(side_faces), "walls": list(side_faces),
         "all": list(faces),
     }
     seg_tags = {}
@@ -581,7 +583,8 @@ def _extrude(b, args, tags_dict=None):
             matched = [f for f in side_faces if f.distance(p) < 1e-4]
             if matched:
                 seg_tags.setdefault(stag, []).extend(matched)
-                roles.setdefault(stag, []).extend(matched)
+                if stag not in roles:
+                    roles[stag] = list(matched)
     tag_map = {"tags": {**seg_tags, **_tag_faces_by_role(b, body, roles, tags_dict or {}, seg_tags)},
                "features": {}}
 

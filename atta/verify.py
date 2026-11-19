@@ -691,7 +691,30 @@ def verify(mesh: M.Mesh, *, constraints=None, expected_genus=None,
                 and kernel_mesh is not mesh
                 and "max_self_intersection_ratio" not in cons
             )
-            if use_kernel_sir:
+            use_per_part_sir = (
+                isinstance(parts, dict)
+                and bool(parts)
+                and "max_self_intersection_ratio" not in cons
+            )
+            if use_per_part_sir:
+                worst_sir = 0.0
+                worst_pairs = 0
+                worst_part = None
+                for pid, pmesh in parts.items():
+                    psi = metrology.self_intersection(pmesh)
+                    psir = float(psi.get("self_intersection_ratio", 0.0))
+                    ppairs = int(psi.get("intersecting_pairs", 0))
+                    if psir > worst_sir or (psir == worst_sir and ppairs > worst_pairs):
+                        worst_sir, worst_pairs, worst_part = psir, ppairs, pid
+                ok = worst_sir <= sir_limit
+                _check(checks, "self_intersection_ratio", ok, quality_sev, worst_sir,
+                       "<=%.6g" % sir_limit,
+                       "no non-adjacent self-intersections across %d parts" % len(parts)
+                       if ok else "self-intersecting triangles in part %s (ratio=%.6g, pairs=%d)"
+                       % (worst_part, worst_sir, worst_pairs),
+                       "eliminate overlapping/folded geometry or fix boolean/revolve "
+                       "profiles before delivery")
+            elif use_kernel_sir:
                 si_info = metrology.self_intersection(kernel_mesh)
                 sir = float(si_info.get("self_intersection_ratio", 0.0))
                 ok = sir <= sir_limit
