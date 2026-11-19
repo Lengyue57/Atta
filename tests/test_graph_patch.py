@@ -123,6 +123,8 @@ def test_validate_accepts_segments_and_tags():
     }
     out = S.validate_spec(sketch_extrude)
     assert out["ok"], out["errors"]
+    norm_segs = out["spec"]["model"]["features"][0]["args"]["segments"]
+    assert [s["op"] for s in norm_segs] == ["line", "arc", "tangent_arc", "line"]
 
     sketch_revolve = {
         "schema": S.SCHEMA,
@@ -198,6 +200,17 @@ def test_validate_rejects_bad_segments_tags_and_selectors():
     })
     bad_from["model"]["output"] = "f"
     assert "unknown_input" in _codes(S.validate_spec(bad_from))
+
+    # args=None or non-mapping args must fail cleanly with bad_arg, never AttributeError
+    null_args = _graph_spec()
+    null_args["model"]["features"] = [{"id": "e", "op": "extrude", "args": None}]
+    null_args["model"]["output"] = "e"
+    res_null = S.validate_spec(null_args)
+    assert not res_null["ok"]
+    assert "bad_arg" in _codes(res_null)
+    pf_null = S.preflight_spec(null_args)
+    assert not pf_null["ok"]
+    assert "bad_arg" in _codes(pf_null)
 
 
 def test_validate_mesh_agreement_and_self_intersection_constraints():

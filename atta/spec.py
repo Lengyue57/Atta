@@ -727,31 +727,44 @@ def _validate_tags(raw: Any, path: str, errors: list[dict]) -> None:
                  "Give a non-empty tag name string.")
 
 
-def _validate_segments(raw: Any, path: str, errors: list[dict]) -> None:
+def _validate_segments(raw: Any, path: str, errors: list[dict]) -> Any:
     if _has_deferred(raw):
-        return
+        return raw
     if not isinstance(raw, (list, tuple)) or not raw:
         _err(errors, "bad_arg", path,
              "segments must be a non-empty array of segment objects",
-             "Use [{type:'line', ...}, {type:'arc', ...}] or circle.")
-        return
+             "Use [{op:'line', to:[x,y]}, {op:'arc', ...}] or circle.")
+        return raw
+    normalized: list[Any] = []
     for i, seg in enumerate(raw):
         sp = "%s[%d]" % (path, i)
         if not isinstance(seg, Mapping):
             _err(errors, "bad_arg", sp, "segment must be an object",
-                 "Use {type:'line'|'arc'|'tangent_arc'|'circle', ...}.")
+                 "Use {op:'line'|'arc'|'tangent_arc'|'circle'|'start'|'move'|'close', ...}.")
+            normalized.append(seg)
             continue
-        seg_type = seg.get("type") or seg.get("kind") or seg.get("op")
-        if not isinstance(seg_type, str) or seg_type not in _SEGMENT_TYPES:
+        seg_out = copy.deepcopy(dict(seg))
+        seg_type = seg_out.get("op") or seg_out.get("type") or seg_out.get("kind")
+        seg_norm = seg_type.strip().lower() if isinstance(seg_type, str) else seg_type
+        if not isinstance(seg_norm, str) or seg_norm not in _SEGMENT_TYPES:
             _err(errors, "bad_arg", sp,
-                 "segment type must be one of %s, got %r"
+                 "segment op must be one of %s, got %r"
                  % (", ".join(sorted(_SEGMENT_TYPES)), seg_type),
-                 "Set type/kind to line, arc, tangent_arc, or circle.")
-        if "tag" in seg and seg["tag"] is not None:
-            if not isinstance(seg["tag"], str) or not seg["tag"].strip():
+                 "Set op to line, arc, tangent_arc, circle, start, move, or close.")
+        else:
+            if not seg_out.get("op"):
+                seg_out["op"] = seg_norm
+                seg_out.pop("type", None)
+                seg_out.pop("kind", None)
+            else:
+                seg_out["op"] = seg_norm
+        if "tag" in seg_out and seg_out["tag"] is not None:
+            if not isinstance(seg_out["tag"], str) or not seg_out["tag"].strip():
                 _err(errors, "bad_arg", sp + ".tag",
                      "segment tag must be a non-empty string",
                      "Give a non-empty tag string or omit tag.")
+        normalized.append(seg_out)
+    return normalized
 
 
 def _validate_edge_selector(raw: Any, path: str, errors: list[dict]) -> None:
@@ -864,7 +877,9 @@ def _validate_feature_args(op: str, args: Mapping, base: str,
             continue
         if key == "segments" and op in _SKETCH_OPS and args[key] is not None:
             if not (op == "revolve" and _is_num(args[key])):
-                _validate_segments(args[key], "%s.args.segments" % base, errors)
+                norm_segs = _validate_segments(args[key], "%s.args.segments" % base, errors)
+                if isinstance(args, dict):
+                    args["segments"] = norm_segs
         elif op in ("fillet", "chamfer") and key == "edges":
             _validate_edge_selector(args[key], "%s.args.edges" % base, errors)
 
@@ -988,13 +1003,14 @@ def _validate_graph(model: dict, errors: list[dict]) -> None:
             docs = ops.get(op) or {}
             required = docs.get("required", []) if isinstance(docs, Mapping) else []
             args = feat.get("args")
-            arg_keys = set(args) if isinstance(args, Mapping) else set()
+            args_map = args if isinstance(args, Mapping) else {}
+            arg_keys = set(args_map)
             for key in required:
                 if key in {"id", "op"}:
                     continue
-                if op == "extrude" and key == "loop_xy" and isinstance(args.get("segments"), (list, tuple)):
+                if op == "extrude" and key == "loop_xy" and isinstance(args_map.get("segments"), (list, tuple)):
                     continue
-                if op == "revolve" and key == "profile_rz" and isinstance(args.get("segments"), (list, tuple)):
+                if op == "revolve" and key == "profile_rz" and isinstance(args_map.get("segments"), (list, tuple)):
                     continue
                 if key in _TOP_LEVEL_FEATURE_KEYS:
                     if key not in feat:
@@ -1044,7 +1060,8 @@ def _validate_graph(model: dict, errors: list[dict]) -> None:
                 _err(errors, "unknown_input", "%s.inputs[%d]" % (base, j),
                      "input refers to unknown feature %r" % (ref,),
                      "Known ids: %s." % (", ".join(sorted(known)) or "(none)"))
-        edges_sel = (feat.get("args") or {}).get("edges")
+        feat_args = feat.get("args")
+        edges_sel = feat_args.get("edges") if isinstance(feat_args, Mapping) else None
         if isinstance(edges_sel, Mapping):
             from_fid = edges_sel.get("from_feature")
             if isinstance(from_fid, str) and from_fid.strip() and from_fid not in known:
@@ -2553,13 +2570,14 @@ def _collect_param_refs(value: Any, out: set[str]) -> None:
 
 def _collect_feature_tags(feat: Mapping) -> set[str]:
     tags: set[str] = set()
-    for container in (feat.get("tags"), (feat.get("args") or {}).get("tags")):
+    args = feat.get("args")
+    args_map = args if isinstance(args, Mapping) else {}
+    for container in (feat.get("tags"), args_map.get("tags")):
         if isinstance(container, Mapping):
             for v in container.values():
                 if isinstance(v, str) and v.strip():
                     tags.add(v.strip())
-    args = feat.get("args") or {}
-    segs = args.get("segments")
+    segs = args_map.get("segments")
     if isinstance(segs, (list, tuple)):
         for seg in segs:
             if isinstance(seg, Mapping) and isinstance(seg.get("tag"), str):
@@ -2589,7 +2607,8 @@ def _lint_graph_model(model: Mapping, prefix: str, ops: dict | None,
             for inp in f.get("inputs") or ():
                 if isinstance(inp, str):
                     stack.append(inp)
-            edges_sel = (f.get("args") or {}).get("edges")
+            f_args = f.get("args")
+            edges_sel = f_args.get("edges") if isinstance(f_args, Mapping) else None
             if isinstance(edges_sel, Mapping) and isinstance(edges_sel.get("from_feature"), str):
                 stack.append(edges_sel["from_feature"])
 
