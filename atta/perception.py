@@ -299,8 +299,8 @@ def perceive(mesh: M.Mesh, record: dict | None = None, *,
 
 
 def diff(before: M.Mesh, after: M.Mesh, *, views=DEFAULT_VIEWS,
-         res: int = 24) -> dict:
-    """Silhouette IoU + ASCII +/- diff between two meshes."""
+         res: int = 24, compare_3d: bool = True) -> dict:
+    """Silhouette IoU + ASCII +/- diff (+ optional 3D metrics) between two meshes."""
     t0 = time.perf_counter()
     views = tuple(str(v) for v in (views or DEFAULT_VIEWS))
     a = probe.silhouette(before, views=views, res=res)
@@ -334,7 +334,7 @@ def diff(before: M.Mesh, after: M.Mesh, *, views=DEFAULT_VIEWS,
             "legend": "# both, + added, - removed, . empty",
         }
     ba, bb = M.bbox(before), M.bbox(after)
-    return _jsonable({
+    result = {
         "schema": "atta.diff/v1",
         "views": out,
         "bbox_before_mm": ba["size"],
@@ -350,7 +350,11 @@ def diff(before: M.Mesh, after: M.Mesh, *, views=DEFAULT_VIEWS,
         "exact": False,
         "method": "atta.diff/v1",
         "ms": _ms(t0),
-    })
+    }
+    if compare_3d:
+        result["metrics_3d"] = probe.compare_meshes_3d(before, after)
+        result["ms"] = _ms(t0)
+    return _jsonable(result)
 
 
 # ---------------------------------------------------------------- trace
