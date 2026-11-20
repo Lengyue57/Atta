@@ -81,6 +81,10 @@ CONSTRAINT_DOCS: dict[str, str] = {
     "render": "{res:[w,h], samples:n, require_ndc:true} render contract",
     "silhouette_iou": "[{view, outline_mm|target_model_id, min_iou}] form gate: "
                       "built silhouette vs a declared outline (0..1 IoU)",
+    "mesh_agreement": "{target_model_id, chamfer_max_mm, hausdorff_p95_max_mm, "
+                      "volumetric_iou_min} 3D mesh agreement vs reference model",
+    "max_self_intersection_ratio": "number in 0..1; maximum fraction of "
+                                   "self-intersecting triangle pairs",
 }
 
 #: Human-facing finish keys.  ``*_mm`` is millimetres, ``*_deg`` degrees.
@@ -98,7 +102,29 @@ _ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,63}$")
 _MAX_LIST_ROWS = {"clearance", "interference", "interfaces", "holes"}
 
 #: Keys that may sit either in a feature's ``args`` or at its top level.
-_TOP_LEVEL_FEATURE_KEYS = {"id", "op", "args", "inputs"}
+_TOP_LEVEL_FEATURE_KEYS = {"id", "op", "args", "inputs", "tags"}
+
+_SKETCH_OPS = frozenset({"extrude", "revolve"})
+_TAGGABLE_OPS = frozenset({
+    "extrude", "revolve", "box", "cylinder", "sphere", "cone", "torus",
+})
+_SEGMENT_TYPES = frozenset({
+    "line", "arc", "tangent_arc", "circle", "start", "move", "close",
+})
+_EDGE_SELECTOR_KEYS = frozenset({
+    "parallel", "kind", "at", "expect_count",
+    "common_edge_of", "on_face", "from_feature",
+})
+_EDGE_CRITERIA_KEYS = frozenset({
+    "parallel", "kind", "at", "common_edge_of", "on_face", "from_feature",
+})
+_BREP_CAPABLE_OPS = frozenset({
+    "box", "cylinder", "sphere", "cone", "torus",
+    "revolve", "extrude",
+    "union", "difference", "intersection",
+    "transform", "mirror", "pattern_linear", "pattern_polar",
+    "fillet", "chamfer",
+})
 
 
 # --------------------------------------------------------------------- helpers
@@ -355,6 +381,45 @@ def _validate_constraint_value(key: str, value: Any, errors: list[dict]) -> None
                 _err(errors, "bad_constraint", where + ".min_iou",
                      "min_iou must be a number in 0..1",
                      "Use min_iou: 0.90.")
+        return
+    if key == "mesh_agreement":
+        if not isinstance(value, Mapping) or not value:
+            _err(errors, "bad_constraint", path,
+                 "mesh_agreement must be a non-empty object",
+                 "Use {target_model_id:'mdl_...', chamfer_max_mm:0.5, "
+                 "hausdorff_p95_max_mm:1.0, volumetric_iou_min:0.9}.")
+            return
+        allowed = {
+            "target_model_id", "chamfer_max_mm",
+            "hausdorff_p95_max_mm", "volumetric_iou_min",
+        }
+        for k, v in value.items():
+            sub_path = "%s.%s" % (path, k)
+            if k not in allowed:
+                _err(errors, "bad_constraint", sub_path,
+                     "unknown mesh_agreement field %r" % (k,),
+                     "Allowed fields: %s." % ", ".join(sorted(allowed)))
+            elif k == "target_model_id":
+                if not isinstance(v, str) or not v.strip():
+                    _err(errors, "bad_constraint", sub_path,
+                         "target_model_id must be a non-empty string",
+                         "Pass the reference model_id.")
+            elif k in {"chamfer_max_mm", "hausdorff_p95_max_mm"}:
+                if not _is_finite_num(v) or float(v) < 0.0:
+                    _err(errors, "bad_constraint", sub_path,
+                         "%s must be a finite number >= 0" % k,
+                         "Use e.g. %s: 0.5." % k)
+            elif k == "volumetric_iou_min":
+                if not _is_finite_num(v) or not (0.0 <= float(v) <= 1.0):
+                    _err(errors, "bad_constraint", sub_path,
+                         "volumetric_iou_min must be a number in 0..1",
+                         "Use e.g. volumetric_iou_min: 0.9.")
+        return
+    if key == "max_self_intersection_ratio":
+        if not _is_finite_num(value) or not (0.0 <= float(value) <= 1.0):
+            _err(errors, "bad_constraint", path,
+                 "max_self_intersection_ratio must be a number in 0..1",
+                 "Use e.g. max_self_intersection_ratio: 0.01.")
         return
     if key in {"min_wall_mm", "dihedral_max_deg", "curvature_p95_deg"}:
         if not _is_num(value) or not math.isfinite(float(value)):
@@ -645,6 +710,138 @@ def _arg_kind_ok(value: Any, kind: Any) -> tuple[bool, str]:
     return True, ""
 
 
+def _validate_tags(raw: Any, path: str, errors: list[dict]) -> None:
+    if raw is None or _has_deferred(raw):
+        return
+    if not isinstance(raw, Mapping):
+        _err(errors, "bad_arg", path, "tags must be an object {slot: tag_name}",
+             "Use e.g. {\"end\": \"cap\", \"start\": \"base\"}.")
+        return
+    for k, v in raw.items():
+        if not isinstance(k, str) or not k.strip():
+            _err(errors, "bad_arg", path, "tag keys must be non-empty strings",
+                 "Use string face/feature tag slot names.")
+        elif not isinstance(v, str) or not v.strip():
+            _err(errors, "bad_arg", "%s.%s" % (path, k),
+                 "tag value for %r must be a non-empty string" % k,
+                 "Give a non-empty tag name string.")
+
+
+def _validate_segments(raw: Any, path: str, errors: list[dict]) -> Any:
+    if _has_deferred(raw):
+        return raw
+    if not isinstance(raw, (list, tuple)) or not raw:
+        _err(errors, "bad_arg", path,
+             "segments must be a non-empty array of segment objects",
+             "Use [{op:'line', to:[x,y]}, {op:'arc', ...}] or circle.")
+        return raw
+    normalized: list[Any] = []
+    for i, seg in enumerate(raw):
+        sp = "%s[%d]" % (path, i)
+        if not isinstance(seg, Mapping):
+            _err(errors, "bad_arg", sp, "segment must be an object",
+                 "Use {op:'line'|'arc'|'tangent_arc'|'circle'|'start'|'move'|'close', ...}.")
+            normalized.append(seg)
+            continue
+        seg_out = copy.deepcopy(dict(seg))
+        seg_type = seg_out.get("op") or seg_out.get("type") or seg_out.get("kind")
+        seg_norm = seg_type.strip().lower() if isinstance(seg_type, str) else seg_type
+        if not isinstance(seg_norm, str) or seg_norm not in _SEGMENT_TYPES:
+            _err(errors, "bad_arg", sp,
+                 "segment op must be one of %s, got %r"
+                 % (", ".join(sorted(_SEGMENT_TYPES)), seg_type),
+                 "Set op to line, arc, tangent_arc, circle, start, move, or close.")
+        else:
+            if not seg_out.get("op"):
+                seg_out["op"] = seg_norm
+                seg_out.pop("type", None)
+                seg_out.pop("kind", None)
+            else:
+                seg_out["op"] = seg_norm
+        if "tag" in seg_out and seg_out["tag"] is not None:
+            if not isinstance(seg_out["tag"], str) or not seg_out["tag"].strip():
+                _err(errors, "bad_arg", sp + ".tag",
+                     "segment tag must be a non-empty string",
+                     "Give a non-empty tag string or omit tag.")
+        normalized.append(seg_out)
+    return normalized
+
+
+def _validate_edge_selector(raw: Any, path: str, errors: list[dict]) -> None:
+    if _has_deferred(raw):
+        return
+    if raw == "all":
+        return
+    if not isinstance(raw, Mapping) or not raw:
+        _err(errors, "bad_selector", path,
+             "edges must be 'all' or a geometric selector object",
+             "Use 'all' or {parallel|kind|at|common_edge_of|on_face|from_feature}.")
+        return
+    unknown = set(raw) - _EDGE_SELECTOR_KEYS
+    if unknown or not (set(raw) & _EDGE_CRITERIA_KEYS):
+        _err(errors, "bad_selector", path,
+             "selector needs one of %s without unknown keys"
+             % "/".join(sorted(_EDGE_CRITERIA_KEYS)),
+             "Use 'all' or {parallel|kind|at|common_edge_of|on_face|from_feature}.")
+        return
+    for key, val in raw.items():
+        sp = "%s.%s" % (path, key)
+        if val is None:
+            _err(errors, "bad_selector", sp,
+                 "selector condition %s must not be null" % key,
+                 "Remove %s or supply a valid value." % key)
+            continue
+        if key == "parallel" and val not in ("x", "y", "z"):
+            _err(errors, "bad_selector", sp,
+                 "parallel must be 'x', 'y', or 'z'",
+                 "Use parallel: 'z'.")
+        elif key == "kind" and val not in ("line", "circle"):
+            _err(errors, "bad_selector", sp,
+                 "kind must be 'line' or 'circle'",
+                 "Use kind: 'line' or 'circle'.")
+        elif key == "expect_count":
+            if not _is_num(val) or not float(val).is_integer() or int(val) < 1:
+                _err(errors, "bad_selector", sp,
+                     "expect_count must be an integer >= 1",
+                     "Use e.g. expect_count: 4.")
+        elif key == "at":
+            if (not isinstance(val, Mapping)
+                    or set(val) - {"axis", "value", "tolerance"}
+                    or not {"axis", "value"} <= set(val)
+                    or val.get("axis") not in ("x", "y", "z")):
+                _err(errors, "bad_selector", sp,
+                     "at needs axis=x/y/z and value=number|min|max",
+                     "Use {axis:'z', value:'max'}.")
+            else:
+                av = val["value"]
+                if av not in ("min", "max") and not _is_finite_num(av):
+                    _err(errors, "bad_selector", sp + ".value",
+                         "at.value must be a finite number or 'min'/'max'",
+                         "Pass a coordinate in model units or 'min'/'max'.")
+                if "tolerance" in val and (
+                        not _is_finite_num(val["tolerance"])
+                        or float(val["tolerance"]) <= 0):
+                    _err(errors, "bad_selector", sp + ".tolerance",
+                         "at.tolerance must be a finite number > 0",
+                         "Use e.g. tolerance: 1e-6.")
+        elif key == "common_edge_of":
+            if (not isinstance(val, (list, tuple)) or len(val) != 2
+                    or not all(isinstance(t, str) and bool(t.strip()) for t in val)):
+                _err(errors, "bad_selector", sp,
+                     "common_edge_of must be [tagA, tagB] of two non-empty strings",
+                     "Use e.g. common_edge_of: ['cap', 'side'].")
+        elif key == "on_face":
+            if not isinstance(val, str) or not val.strip():
+                _err(errors, "bad_selector", sp,
+                     "on_face must be a non-empty tag string",
+                     "Use e.g. on_face: 'top'.")
+        elif key == "from_feature":
+            if not isinstance(val, str) or not val.strip():
+                _err(errors, "bad_selector", sp,
+                     "from_feature must be a non-empty feature id string",
+                     "Use e.g. from_feature: 'plate'.")
+
+
 def _validate_feature_args(op: str, args: Mapping, base: str,
                            docs: Mapping, errors: list[dict]) -> None:
     """Type-check feature args against the registry's declared kinds.
@@ -658,6 +855,10 @@ def _validate_feature_args(op: str, args: Mapping, base: str,
     required = tuple(docs.get("required") or ())
     optional = tuple(docs.get("optional") or ())
     allowed = set(required) | set(optional)
+    if op in _SKETCH_OPS:
+        allowed.add("segments")
+    if op in _TAGGABLE_OPS:
+        allowed.add("tags")
 
     for key in args:
         if not isinstance(key, str):
@@ -666,11 +867,21 @@ def _validate_feature_args(op: str, args: Mapping, base: str,
                  "Use a mapping of string keys; see atta_catalog for %s." % op)
             continue
         if key in _TOP_LEVEL_FEATURE_KEYS:
+            if key == "tags" and op in _TAGGABLE_OPS:
+                _validate_tags(args[key], "%s.args.tags" % base, errors)
             continue  # legal here: these live at the feature's top level
         if allowed and key not in allowed:
             _err(errors, "unknown_arg", "%s.args.%s" % (base, key),
                  "%s has no argument %r" % (op, key),
                  "Use one of: %s." % (", ".join(sorted(allowed)) or "(none)"))
+            continue
+        if key == "segments" and op in _SKETCH_OPS and args[key] is not None:
+            if not (op == "revolve" and _is_num(args[key])):
+                norm_segs = _validate_segments(args[key], "%s.args.segments" % base, errors)
+                if isinstance(args, dict):
+                    args["segments"] = norm_segs
+        elif op in ("fillet", "chamfer") and key == "edges":
+            _validate_edge_selector(args[key], "%s.args.edges" % base, errors)
 
     try:
         kinds = _load_arg_kinds(op)
@@ -678,6 +889,8 @@ def _validate_feature_args(op: str, args: Mapping, base: str,
         return
     for key, value in args.items():
         if not isinstance(key, str) or key not in kinds:
+            continue
+        if key == "segments" and op in _SKETCH_OPS and isinstance(value, (list, tuple)):
             continue
         ok, expected = _arg_kind_ok(value, kinds[key])
         if not ok:
@@ -790,9 +1003,14 @@ def _validate_graph(model: dict, errors: list[dict]) -> None:
             docs = ops.get(op) or {}
             required = docs.get("required", []) if isinstance(docs, Mapping) else []
             args = feat.get("args")
-            arg_keys = set(args) if isinstance(args, Mapping) else set()
+            args_map = args if isinstance(args, Mapping) else {}
+            arg_keys = set(args_map)
             for key in required:
                 if key in {"id", "op"}:
+                    continue
+                if op == "extrude" and key == "loop_xy" and isinstance(args_map.get("segments"), (list, tuple)):
+                    continue
+                if op == "revolve" and key == "profile_rz" and isinstance(args_map.get("segments"), (list, tuple)):
                     continue
                 if key in _TOP_LEVEL_FEATURE_KEYS:
                     if key not in feat:
@@ -805,6 +1023,9 @@ def _validate_graph(model: dict, errors: list[dict]) -> None:
                          "Add %r to args; see atta_catalog for %s." % (key, op))
             if isinstance(args, Mapping):
                 _validate_feature_args(op, args, base, docs, errors)
+
+        if "tags" in feat and feat["tags"] is not None:
+            _validate_tags(feat["tags"], base + ".tags", errors)
 
         args = feat.get("args", {})
         if args is None:
@@ -838,6 +1059,14 @@ def _validate_graph(model: dict, errors: list[dict]) -> None:
             elif ref not in known:
                 _err(errors, "unknown_input", "%s.inputs[%d]" % (base, j),
                      "input refers to unknown feature %r" % (ref,),
+                     "Known ids: %s." % (", ".join(sorted(known)) or "(none)"))
+        feat_args = feat.get("args")
+        edges_sel = feat_args.get("edges") if isinstance(feat_args, Mapping) else None
+        if isinstance(edges_sel, Mapping):
+            from_fid = edges_sel.get("from_feature")
+            if isinstance(from_fid, str) and from_fid.strip() and from_fid not in known:
+                _err(errors, "unknown_input", base + ".args.edges.from_feature",
+                     "from_feature refers to unknown feature %r" % (from_fid,),
                      "Known ids: %s." % (", ".join(sorted(known)) or "(none)"))
 
     deps = {feat["id"]: [r for r in feat.get("inputs", []) if isinstance(r, str)]
@@ -1508,6 +1737,10 @@ _DESIGN_INTENT = {
 
 def _intent_missing(op: str, feat: Mapping, args: Mapping, key: str) -> bool:
     """True when the design-intent arg ``key`` is absent or unusable."""
+    if op == "revolve" and key == "profile_rz":
+        segs = args.get("segments", feat.get("segments"))
+        if isinstance(segs, (list, tuple)) and len(segs) >= 1:
+            return False
     value = args.get(key, feat.get(key))
     if op == "loft":  # loft needs at least two rings, not merely one
         return not (isinstance(value, list) and len(value) >= 2)
@@ -1860,6 +2093,839 @@ def compile_spec(spec: Any) -> dict:
     return {"ok": True, "compiled": compiled, "errors": errors}
 
 
+# ---------------------------------------------------------------------- patch
+
+_TOP_SPEC_PATCH_KEYS = frozenset({
+    "name", "quality", "material", "finish", "constraints", "assumptions",
+})
+_GRAPH_PATCH_KEYS = frozenset({
+    "features", "add_features", "remove_features",
+    "output", "params", "segments", "units",
+})
+_ASSEMBLY_PATCH_KEYS = frozenset({
+    "parts", "add_parts", "remove_parts",
+    "mates", "solver", "clearance", "allow_interference",
+})
+_FEATURE_PATCH_KEYS = frozenset({"op", "args", "inputs", "tags"})
+
+
+def _safe_spec_hash(spec_obj: Any) -> str | None:
+    try:
+        return spec_hash(spec_obj)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _apply_top_spec_fields(s: dict, patches: Mapping,
+                           applied: list[dict], delta: dict) -> None:
+    fields_delta = delta.setdefault("fields", {})
+    for key in sorted(_TOP_SPEC_PATCH_KEYS):
+        if key not in patches:
+            continue
+        val = patches[key]
+        before = copy.deepcopy(s.get(key))
+        if key in ("finish", "constraints") and isinstance(val, Mapping):
+            merged = dict(s.get(key) or {}) if isinstance(s.get(key), Mapping) else {}
+            merged.update(copy.deepcopy(dict(val)))
+            s[key] = merged
+        else:
+            s[key] = copy.deepcopy(val)
+        fields_delta[key] = {"before": before, "after": copy.deepcopy(s[key])}
+        applied.append({"op": "patch_field", "path": "$." + key})
+
+
+def _patch_graph_model(model: dict, patches: Mapping, base_path: str,
+                       errors: list[dict], applied: list[dict],
+                       delta: dict) -> None:
+    features = copy.deepcopy(list(model.get("features") or []))
+    if "params" in patches:
+        p_patch = patches["params"]
+        if not isinstance(p_patch, Mapping):
+            _err(errors, "bad_patch", base_path + ".params",
+                 "params patch must be an object",
+                 "Pass {param_name: finite_number}.")
+        else:
+            cur_params = dict(model.get("params") or {})
+            p_delta = delta.setdefault("params", {})
+            for k, v in p_patch.items():
+                old = cur_params.get(k)
+                cur_params[k] = copy.deepcopy(v)
+                p_delta[k] = {"before": old, "after": copy.deepcopy(v)}
+                applied.append({"op": "patch_param", "name": k,
+                                "before": old, "after": copy.deepcopy(v)})
+            model["params"] = cur_params
+
+    if "remove_features" in patches:
+        rem = patches["remove_features"]
+        if not isinstance(rem, (list, tuple)):
+            _err(errors, "bad_patch", base_path + ".remove_features",
+                 "remove_features must be an array of feature ids",
+                 "Pass [\"feature_id\", ...].")
+        else:
+            rem_delta = delta.setdefault("removed_features", [])
+            for i, fid in enumerate(rem):
+                rp = "%s.remove_features[%d]" % (base_path, i)
+                if not isinstance(fid, str) or not any(
+                        isinstance(f, Mapping) and f.get("id") == fid
+                        for f in features):
+                    known = sorted(f["id"] for f in features
+                                   if isinstance(f, Mapping)
+                                   and isinstance(f.get("id"), str))
+                    _err(errors, "unknown_feature_id", rp,
+                         "cannot remove unknown feature id %r" % (fid,),
+                         "Known feature ids: %s." % (", ".join(known) or "(none)"))
+                    continue
+                features = [f for f in features
+                            if not (isinstance(f, Mapping) and f.get("id") == fid)]
+                rem_delta.append(fid)
+                applied.append({"op": "remove_feature", "id": fid})
+
+    if "features" in patches:
+        f_patches = patches["features"]
+        if not isinstance(f_patches, Mapping):
+            _err(errors, "bad_patch", base_path + ".features",
+                 "features patch must be an object {feature_id: {args, inputs, op, tags}}",
+                 "Key patches by target feature id.")
+        else:
+            by_id = {f["id"]: idx for idx, f in enumerate(features)
+                     if isinstance(f, Mapping) and isinstance(f.get("id"), str)}
+            mod_delta = delta.setdefault("modified_features", {})
+            for fid, fpatch in f_patches.items():
+                fp = "%s.features.%s" % (base_path, fid)
+                if fid not in by_id:
+                    _err(errors, "unknown_feature_id", fp,
+                         "unknown target feature id %r" % (fid,),
+                         "Known feature ids: %s."
+                         % (", ".join(sorted(by_id)) or "(none)"))
+                    continue
+                if not isinstance(fpatch, Mapping):
+                    _err(errors, "bad_patch", fp,
+                         "feature patch must be an object",
+                         "Use {args, inputs, op, tags}.")
+                    continue
+                unknown = set(fpatch) - _FEATURE_PATCH_KEYS
+                if unknown:
+                    _err(errors, "bad_patch", fp,
+                         "unknown feature patch field(s): %s"
+                         % ", ".join(sorted(unknown)),
+                         "Allowed fields: %s."
+                         % ", ".join(sorted(_FEATURE_PATCH_KEYS)))
+                    continue
+                feat = dict(features[by_id[fid]])
+                before_feat = copy.deepcopy(feat)
+                if "op" in fpatch:
+                    feat["op"] = copy.deepcopy(fpatch["op"])
+                if "args" in fpatch:
+                    ap = fpatch["args"]
+                    if not isinstance(ap, Mapping):
+                        _err(errors, "bad_patch", fp + ".args",
+                             "feature args patch must be an object",
+                             "Pass {arg_name: value}.")
+                    else:
+                        cur_args = dict(feat.get("args") or {})
+                        for ak, av in ap.items():
+                            cur_args[ak] = copy.deepcopy(av)
+                        feat["args"] = cur_args
+                if "inputs" in fpatch:
+                    ip = fpatch["inputs"]
+                    if not isinstance(ip, (list, tuple)):
+                        _err(errors, "bad_patch", fp + ".inputs",
+                             "feature inputs patch must be an array",
+                             "Pass [\"input_id\", ...].")
+                    else:
+                        feat["inputs"] = list(ip)
+                if "tags" in fpatch:
+                    tp = fpatch["tags"]
+                    if tp is None:
+                        feat.pop("tags", None)
+                    elif not isinstance(tp, Mapping):
+                        _err(errors, "bad_patch", fp + ".tags",
+                             "feature tags patch must be an object or null",
+                             "Pass {slot: tag_name}.")
+                    else:
+                        cur_tags = (dict(feat["tags"])
+                                    if isinstance(feat.get("tags"), Mapping) else {})
+                        for tk, tv in tp.items():
+                            cur_tags[tk] = copy.deepcopy(tv)
+                        feat["tags"] = cur_tags
+                features[by_id[fid]] = feat
+                mod_delta[fid] = {"before": before_feat,
+                                  "after": copy.deepcopy(feat)}
+                applied.append({"op": "patch_feature", "id": fid,
+                                "fields": sorted(fpatch)})
+
+    if "add_features" in patches:
+        adds = patches["add_features"]
+        if not isinstance(adds, (list, tuple)):
+            _err(errors, "bad_patch", base_path + ".add_features",
+                 "add_features must be an array of feature objects",
+                 "Pass [{id, op, args, inputs}, ...].")
+        else:
+            existing = {f["id"] for f in features
+                        if isinstance(f, Mapping) and isinstance(f.get("id"), str)}
+            add_delta = delta.setdefault("added_features", [])
+            for i, raw in enumerate(adds):
+                ap = "%s.add_features[%d]" % (base_path, i)
+                if not isinstance(raw, Mapping):
+                    _err(errors, "bad_patch", ap,
+                         "added feature must be an object",
+                         "Pass {id, op, args, inputs}.")
+                    continue
+                nf = copy.deepcopy(dict(raw))
+                nfid = nf.get("id")
+                if isinstance(nfid, str) and nfid in existing:
+                    _err(errors, "duplicate_id", ap + ".id",
+                         "cannot add feature with existing id %r" % (nfid,),
+                         "Use a unique id or patch it under patches.features.")
+                    continue
+                if isinstance(nfid, str):
+                    existing.add(nfid)
+                features.append(nf)
+                add_delta.append(nfid)
+                applied.append({"op": "add_feature", "id": nfid})
+
+    for key in ("output", "segments", "units"):
+        if key in patches:
+            before = copy.deepcopy(model.get(key))
+            model[key] = copy.deepcopy(patches[key])
+            delta.setdefault("fields", {})["model." + key] = {
+                "before": before, "after": copy.deepcopy(model[key]),
+            }
+            applied.append({"op": "patch_field", "path": "$.model." + key})
+
+    model["features"] = features
+
+
+def _patch_assembly_model(model: dict, patches: Mapping, base_path: str,
+                          errors: list[dict], applied: list[dict],
+                          delta: dict) -> None:
+    parts = copy.deepcopy(list(model.get("parts") or []))
+
+    if "remove_parts" in patches:
+        rem = patches["remove_parts"]
+        if not isinstance(rem, (list, tuple)):
+            _err(errors, "bad_patch", base_path + ".remove_parts",
+                 "remove_parts must be an array of part ids",
+                 "Pass [\"part_id\", ...].")
+        else:
+            rem_delta = delta.setdefault("removed_parts", [])
+            for i, pid in enumerate(rem):
+                rp = "%s.remove_parts[%d]" % (base_path, i)
+                if not isinstance(pid, str) or not any(
+                        isinstance(p, Mapping) and p.get("id") == pid
+                        for p in parts):
+                    known = sorted(p["id"] for p in parts
+                                   if isinstance(p, Mapping)
+                                   and isinstance(p.get("id"), str))
+                    _err(errors, "unknown_part_id", rp,
+                         "cannot remove unknown part id %r" % (pid,),
+                         "Known part ids: %s." % (", ".join(known) or "(none)"))
+                    continue
+                parts = [p for p in parts
+                         if not (isinstance(p, Mapping) and p.get("id") == pid)]
+                rem_delta.append(pid)
+                applied.append({"op": "remove_part", "id": pid})
+
+    if "parts" in patches:
+        p_patches = patches["parts"]
+        if not isinstance(p_patches, Mapping):
+            _err(errors, "bad_patch", base_path + ".parts",
+                 "parts patch must be an object {part_id: {...}}",
+                 "Key patches by target part id.")
+        else:
+            by_id = {p["id"]: idx for idx, p in enumerate(parts)
+                     if isinstance(p, Mapping) and isinstance(p.get("id"), str)}
+            mod_parts = delta.setdefault("modified_parts", {})
+            for pid, ppatch in p_patches.items():
+                pp = "%s.parts.%s" % (base_path, pid)
+                if pid not in by_id:
+                    _err(errors, "unknown_part_id", pp,
+                         "unknown target part id %r" % (pid,),
+                         "Known part ids: %s."
+                         % (", ".join(sorted(by_id)) or "(none)"))
+                    continue
+                if not isinstance(ppatch, Mapping):
+                    _err(errors, "bad_patch", pp,
+                         "part patch must be an object",
+                         "Pass fields to update on the part.")
+                    continue
+                part = dict(parts[by_id[pid]])
+                before_part = copy.deepcopy(part)
+                for key, val in ppatch.items():
+                    if key == "params" and isinstance(val, Mapping):
+                        cur = dict(part.get("params") or {})
+                        cur.update(copy.deepcopy(dict(val)))
+                        part["params"] = cur
+                    elif (key == "graph" and isinstance(val, Mapping)
+                          and isinstance(part.get("graph"), Mapping)
+                          and not isinstance(val.get("features"), (list, tuple))):
+                        sub_graph = copy.deepcopy(dict(part["graph"]))
+                        sub_delta: dict = {}
+                        _patch_graph_model(sub_graph, val, pp + ".graph",
+                                           errors, applied, sub_delta)
+                        part["graph"] = sub_graph
+                    elif (key == "spec" and isinstance(val, Mapping)
+                          and isinstance(part.get("spec"), Mapping)
+                          and "model" not in val and "schema" not in val):
+                        sub_res = patch_spec(part["spec"], val)
+                        if not sub_res["ok"]:
+                            errors.extend(_prefix_errors(
+                                sub_res["errors"], pp + ".spec"))
+                        part["spec"] = sub_res["spec"] or part["spec"]
+                    elif val is None and key in ("attach", "transform", "ports"):
+                        part.pop(key, None)
+                    else:
+                        part[key] = copy.deepcopy(val)
+                parts[by_id[pid]] = part
+                mod_parts[pid] = {"before": before_part,
+                                  "after": copy.deepcopy(part)}
+                applied.append({"op": "patch_part", "id": pid,
+                                "fields": sorted(ppatch)})
+
+    if "add_parts" in patches:
+        adds = patches["add_parts"]
+        if not isinstance(adds, (list, tuple)):
+            _err(errors, "bad_patch", base_path + ".add_parts",
+                 "add_parts must be an array of part objects",
+                 "Pass [{id, recipe|graph|spec|model_id, ...}, ...].")
+        else:
+            existing = {p["id"] for p in parts
+                        if isinstance(p, Mapping) and isinstance(p.get("id"), str)}
+            add_delta = delta.setdefault("added_parts", [])
+            for i, raw in enumerate(adds):
+                ap = "%s.add_parts[%d]" % (base_path, i)
+                if not isinstance(raw, Mapping):
+                    _err(errors, "bad_patch", ap,
+                         "added part must be an object",
+                         "Pass {id, recipe|graph|spec|model_id, ...}.")
+                    continue
+                np_obj = copy.deepcopy(dict(raw))
+                npid = np_obj.get("id")
+                if isinstance(npid, str) and npid in existing:
+                    _err(errors, "duplicate_part_id", ap + ".id",
+                         "cannot add part with existing id %r" % (npid,),
+                         "Use a unique id or patch it under patches.parts.")
+                    continue
+                if isinstance(npid, str):
+                    existing.add(npid)
+                parts.append(np_obj)
+                add_delta.append(npid)
+                applied.append({"op": "add_part", "id": npid})
+
+    for key in ("mates", "solver", "clearance", "allow_interference"):
+        if key in patches:
+            before = copy.deepcopy(model.get(key))
+            model[key] = copy.deepcopy(patches[key])
+            delta.setdefault("fields", {})["model." + key] = {
+                "before": before, "after": copy.deepcopy(model[key]),
+            }
+            applied.append({"op": "patch_field", "path": "$.model." + key})
+
+    model["parts"] = parts
+
+
+def patch_spec(spec: Any, patches: Any = None) -> dict:
+    """Apply locate-then-infill patches to a recipe, graph, or assembly spec."""
+    if not isinstance(spec, Mapping):
+        errors = [{"code": "bad_spec", "path": "$",
+                   "message": "spec must be a JSON object",
+                   "fix": "Pass {schema, name, model, ...}."}]
+        return {"ok": False, "spec": None, "applied_patches": [],
+                "delta": {}, "errors": errors}
+    if patches is None:
+        patches = {}
+    if not isinstance(patches, Mapping):
+        errors = [{"code": "bad_patches", "path": "$.patches",
+                   "message": "patches must be a JSON object",
+                   "fix": "Pass a dict of patches."}]
+        return {"ok": False, "spec": copy.deepcopy(dict(spec)),
+                "applied_patches": [], "delta": {}, "errors": errors}
+
+    s = copy.deepcopy(dict(spec))
+    before_hash = _safe_spec_hash(s)
+    model = s.get("model")
+    if not isinstance(model, dict):
+        v = validate_spec(s)
+        return {"ok": False, "spec": v["spec"], "applied_patches": [],
+                "delta": {"kind": None, "spec_hash_before": before_hash,
+                          "spec_hash_after": before_hash, "changed": False},
+                "errors": v["errors"]}
+
+    kind = model.get("kind")
+    errors: list[dict] = []
+    applied: list[dict] = []
+    delta: dict[str, Any] = {
+        "kind": kind,
+        "spec_hash_before": before_hash,
+        "spec_hash_after": before_hash,
+        "changed": False,
+    }
+
+    if kind == KIND_RECIPE:
+        recipe_param_names: set[str] = set()
+        rid = model.get("id")
+        if isinstance(rid, str) and rid.strip():
+            try:
+                recipe = _get_recipe(rid)
+                recipe_param_names = set(_attr(recipe, "params", {}) or {})
+            except AttaError:
+                recipe_param_names = set()
+
+        cur_params = dict(model.get("params") or {}) if isinstance(
+            model.get("params"), Mapping) else {}
+        p_delta = delta.setdefault("params", {})
+
+        def _set_recipe_param(k: str, v: Any) -> None:
+            old = cur_params.get(k)
+            cur_params[k] = copy.deepcopy(v)
+            p_delta[k] = {"before": old, "after": copy.deepcopy(v)}
+            applied.append({"op": "patch_param", "name": k,
+                            "before": old, "after": copy.deepcopy(v)})
+
+        top_patches: dict[str, Any] = {}
+        for key, val in patches.items():
+            if key in recipe_param_names:
+                _set_recipe_param(key, val)
+            elif key == "params":
+                if not isinstance(val, Mapping):
+                    _err(errors, "bad_patch", "$.patches.params",
+                         "params patch must be an object",
+                         "Pass {param_name: value}.")
+                else:
+                    for pk, pv in val.items():
+                        _set_recipe_param(pk, pv)
+            elif key == "preset":
+                before = model.get("preset")
+                model["preset"] = copy.deepcopy(val)
+                delta.setdefault("fields", {})["model.preset"] = {
+                    "before": before, "after": copy.deepcopy(val),
+                }
+                applied.append({"op": "patch_field", "path": "$.model.preset"})
+            elif key in _TOP_SPEC_PATCH_KEYS:
+                top_patches[key] = val
+            else:
+                _set_recipe_param(key, val)
+        model["params"] = cur_params
+        if top_patches:
+            _apply_top_spec_fields(s, top_patches, applied, delta)
+
+    elif kind == KIND_GRAPH:
+        unknown = set(patches) - _GRAPH_PATCH_KEYS - _TOP_SPEC_PATCH_KEYS
+        if unknown:
+            _err(errors, "bad_patch", "$.patches",
+                 "unknown graph patch key(s): %s" % ", ".join(sorted(unknown)),
+                 "Allowed keys: %s."
+                 % ", ".join(sorted(_GRAPH_PATCH_KEYS | _TOP_SPEC_PATCH_KEYS)))
+        _apply_top_spec_fields(s, patches, applied, delta)
+        _patch_graph_model(model, patches, "$.patches", errors, applied, delta)
+
+    elif kind == KIND_ASSEMBLY:
+        unknown = set(patches) - _ASSEMBLY_PATCH_KEYS - _TOP_SPEC_PATCH_KEYS
+        if unknown:
+            _err(errors, "bad_patch", "$.patches",
+                 "unknown assembly patch key(s): %s" % ", ".join(sorted(unknown)),
+                 "Allowed keys: %s."
+                 % ", ".join(sorted(_ASSEMBLY_PATCH_KEYS | _TOP_SPEC_PATCH_KEYS)))
+        _apply_top_spec_fields(s, patches, applied, delta)
+        _patch_assembly_model(model, patches, "$.patches", errors, applied, delta)
+
+    else:
+        v = validate_spec(s)
+        return {"ok": False, "spec": v["spec"], "applied_patches": [],
+                "delta": delta, "errors": v["errors"]}
+
+    v = validate_spec(s)
+    combined_errors = _dedupe_errors(errors, v["errors"])
+    out_spec = v["spec"] if v["spec"] is not None else s
+    after_hash = _safe_spec_hash(out_spec)
+    delta["spec_hash_after"] = after_hash
+    delta["changed"] = (before_hash != after_hash)
+    return {
+        "ok": not combined_errors,
+        "spec": out_spec,
+        "applied_patches": applied,
+        "delta": delta,
+        "errors": combined_errors,
+    }
+
+
+# ------------------------------------------------------------------ preflight
+
+def _warn(warnings: list[dict], code: str, path: str,
+          message: str, fix: str) -> None:
+    warnings.append({"code": str(code), "path": str(path),
+                     "message": str(message), "fix": str(fix)})
+
+
+def _collect_param_refs(value: Any, out: set[str]) -> None:
+    if isinstance(value, Mapping):
+        if "$param" in value and isinstance(value["$param"], str):
+            out.add(value["$param"])
+        for v in value.values():
+            _collect_param_refs(v, out)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _collect_param_refs(v, out)
+
+
+def _collect_feature_tags(feat: Mapping) -> set[str]:
+    tags: set[str] = set()
+    args = feat.get("args")
+    args_map = args if isinstance(args, Mapping) else {}
+    for container in (feat.get("tags"), args_map.get("tags")):
+        if isinstance(container, Mapping):
+            for v in container.values():
+                if isinstance(v, str) and v.strip():
+                    tags.add(v.strip())
+    segs = args_map.get("segments")
+    if isinstance(segs, (list, tuple)):
+        for seg in segs:
+            if isinstance(seg, Mapping) and isinstance(seg.get("tag"), str):
+                if seg["tag"].strip():
+                    tags.add(seg["tag"].strip())
+    return tags
+
+
+def _lint_graph_model(model: Mapping, prefix: str, ops: dict | None,
+                      errors: list[dict], warnings: list[dict]) -> dict:
+    features = list(model.get("features") or [])
+    by_id = {f["id"]: f for f in features
+             if isinstance(f, Mapping) and isinstance(f.get("id"), str)}
+    output = model.get("output")
+    declared_params = set((model.get("params") or {}).keys())
+
+    # 1. Dependencies & reachability from output
+    reachable: set[str] = set()
+    if isinstance(output, str) and output in by_id:
+        stack = [output]
+        while stack:
+            fid = stack.pop()
+            if fid in reachable or fid not in by_id:
+                continue
+            reachable.add(fid)
+            f = by_id[fid]
+            for inp in f.get("inputs") or ():
+                if isinstance(inp, str):
+                    stack.append(inp)
+            f_args = f.get("args")
+            edges_sel = f_args.get("edges") if isinstance(f_args, Mapping) else None
+            if isinstance(edges_sel, Mapping) and isinstance(edges_sel.get("from_feature"), str):
+                stack.append(edges_sel["from_feature"])
+
+        for i, feat in enumerate(features):
+            if isinstance(feat, Mapping) and isinstance(feat.get("id"), str):
+                if feat["id"] not in reachable:
+                    _warn(warnings, "unreachable_feature",
+                          "%s.features[%d]" % (prefix, i),
+                          "feature %r is not reachable from output %r"
+                          % (feat["id"], output),
+                          "Wire it into %r or remove the unused feature." % output)
+
+    # Ancestor cache for from_feature & selector tag checks
+    ancestors_cache: dict[str, set[str]] = {}
+
+    def _ancestors(fid: str, seen: set[str] | None = None) -> set[str]:
+        if fid in ancestors_cache:
+            return ancestors_cache[fid]
+        seen = set(seen or ())
+        if fid in seen or fid not in by_id:
+            return set()
+        seen.add(fid)
+        res: set[str] = set()
+        for inp in by_id[fid].get("inputs") or ():
+            if isinstance(inp, str) and inp in by_id:
+                res.add(inp)
+                res |= _ancestors(inp, seen)
+        ancestors_cache[fid] = res
+        return res
+
+    # 2. Arity, $param refs, unit scales, selectors
+    dep_ok = True
+    unit_ok = model.get("units", "mm") == "mm"
+    sel_ok = True
+    has_cad_op = any(isinstance(f, Mapping) and f.get("op") in ("fillet", "chamfer")
+                     for f in features)
+    for i, feat in enumerate(features):
+        if not isinstance(feat, Mapping):
+            continue
+        fp = "%s.features[%d]" % (prefix, i)
+        fid = feat.get("id")
+        op = feat.get("op")
+        inputs = feat.get("inputs") or []
+        args = feat.get("args") if isinstance(feat.get("args"), Mapping) else {}
+
+        if ops is not None and isinstance(op, str) and op in ops:
+            meta = ops[op] or {}
+            arity = meta.get("arity", 0)
+            min_inputs = meta.get("min_inputs")
+            if arity == 0 and len(inputs) > 0:
+                _warn(warnings, "unused_inputs", fp + ".inputs",
+                      "%s takes 0 inputs but got %d" % (op, len(inputs)),
+                      "Remove inputs from %r." % fid)
+            elif arity == 1 and min_inputs is None and len(inputs) != 1:
+                dep_ok = False
+                _err(errors, "bad_arity", fp + ".inputs",
+                     "%s requires exactly 1 input, got %d" % (op, len(inputs)),
+                     "Supply inputs: ['source_id'].")
+            elif arity >= 2 and len(inputs) < (min_inputs or 2):
+                _warn(warnings, "few_inputs", fp + ".inputs",
+                      "%s normally takes >= %d inputs, got %d"
+                      % (op, int(min_inputs or 2), len(inputs)),
+                      "Add all operands to inputs.")
+
+        refs: set[str] = set()
+        _collect_param_refs(args, refs)
+        for ref in sorted(refs - declared_params):
+            _warn(warnings, "missing_graph_param", fp + ".args",
+                  "arg references $param %r which is not declared in model.params" % ref,
+                  "Add %r to model.params or supply params at build time." % ref)
+
+        for dim_key in ("size", "radius", "height", "r_bottom", "r_top"):
+            val = args.get(dim_key)
+            nums = val if isinstance(val, (list, tuple)) else [val]
+            for num in nums:
+                if _is_finite_num(num):
+                    fv = abs(float(num))
+                    if 0.0 < fv < 0.01:
+                        _warn(warnings, "suspicious_unit_scale",
+                              "%s.args.%s" % (fp, dim_key),
+                              "%s=%g mm is < 0.01 mm; check mm vs m units"
+                              % (dim_key, float(num)),
+                              "Graph dimensions are in millimetres, not metres.")
+                        break
+                    if fv > 100000.0:
+                        _warn(warnings, "suspicious_unit_scale",
+                              "%s.args.%s" % (fp, dim_key),
+                              "%s=%g mm exceeds 100 m" % (dim_key, float(num)),
+                              "Verify dimensions are in millimetres.")
+                        break
+
+        if op in ("fillet", "chamfer"):
+            edges_sel = args.get("edges")
+            anc = _ancestors(fid) if isinstance(fid, str) else set()
+            if has_cad_op:
+                for afid in anc:
+                    aop = by_id[afid].get("op")
+                    if isinstance(aop, str) and aop not in _BREP_CAPABLE_OPS:
+                        _warn(warnings, "non_brep_with_cad_op", fp,
+                              "ancestor %r (%s) is outside the OCCT B-rep subset"
+                              % (afid, aop),
+                              "fillet/chamfer require B-rep-capable ancestors.")
+            if isinstance(edges_sel, Mapping):
+                from_fid = edges_sel.get("from_feature")
+                if isinstance(from_fid, str) and from_fid in by_id and from_fid not in anc:
+                    _warn(warnings, "non_ancestor_from_feature",
+                          fp + ".args.edges.from_feature",
+                          "from_feature %r is not an ancestor of %r"
+                          % (from_fid, fid),
+                          "Ensure from_feature feeds into this fillet/chamfer.")
+                upstream_ids = ({from_fid} if isinstance(from_fid, str)
+                                and from_fid in by_id else anc)
+                upstream_tags: set[str] = set()
+                for uid in upstream_ids:
+                    upstream_tags |= _collect_feature_tags(by_id[uid])
+                wanted_tags: list[str] = []
+                if isinstance(edges_sel.get("on_face"), str):
+                    wanted_tags.append(edges_sel["on_face"])
+                if isinstance(edges_sel.get("common_edge_of"), (list, tuple)):
+                    wanted_tags.extend(t for t in edges_sel["common_edge_of"]
+                                       if isinstance(t, str))
+                for wt in wanted_tags:
+                    if wt not in upstream_tags:
+                        _warn(warnings, "unresolved_selector_tag",
+                              fp + ".args.edges",
+                              "edge selector tag %r is not declared on upstream features"
+                              % wt,
+                              "Declare tags={...} or segment tag=%r on the target feature, "
+                              "or verify it is an implicit primitive tag." % wt)
+
+    return {
+        "dep_ok": dep_ok,
+        "unit_ok": unit_ok,
+        "sel_ok": sel_ok,
+        "n_features": len(features),
+        "n_reachable": len(reachable),
+        "patchable_feature_ids": [f["id"] for f in features
+                                  if isinstance(f, Mapping)
+                                  and isinstance(f.get("id"), str)],
+    }
+
+
+def preflight_spec(spec: Any) -> dict:
+    """Fast non-building validation plus dependency/unit/port/selector/patchability lint."""
+    v = validate_spec(spec)
+    errors = list(v.get("errors") or [])
+    warnings: list[dict] = []
+    s = v.get("spec")
+
+    if not isinstance(spec, Mapping) or s is None:
+        return {
+            "ok": False,
+            "valid": False,
+            "kind": None,
+            "spec": None,
+            "errors": errors,
+            "warnings": warnings,
+            "checks": {
+                "schema": False, "dependencies": False, "units": False,
+                "ports": False, "selectors": False, "patchability": False,
+            },
+            "summary": {"n_errors": len(errors), "n_warnings": 0,
+                        "patchable_targets": []},
+        }
+
+    model = s.get("model") or {}
+    kind = model.get("kind")
+    dep_ok = True
+    unit_ok = True
+    port_ok = True
+    sel_ok = True
+    patch_ok = bool(v.get("ok"))
+    summary: dict[str, Any] = {"kind": kind}
+
+    ma = (s.get("constraints") or {}).get("mesh_agreement")
+    if isinstance(ma, Mapping) and not ma.get("target_model_id"):
+        _warn(warnings, "missing_target_model_id",
+              "$.constraints.mesh_agreement",
+              "mesh_agreement has no target_model_id",
+              "Set target_model_id or pass reference=... to atta_verify.")
+
+    if kind == KIND_RECIPE:
+        rid = model.get("id")
+        patchable_params: list[str] = []
+        if isinstance(rid, str) and rid.strip():
+            try:
+                recipe = _get_recipe(rid)
+                specs = _attr(recipe, "params", {}) or {}
+                patchable_params = sorted(specs)
+                resolved = recipe.resolve(
+                    patch=dict(model.get("params") or {}),
+                    preset=str(model.get("preset") or "nominal"))
+                if bool(_attr(resolved, "blocked", False)):
+                    issues = _attr(resolved, "issues", None) or []
+                    _err(errors, "recipe_blocked", "$.model.params",
+                         "recipe constraints block this parameter set",
+                         "Resolve issues: %s"
+                         % json.dumps(issues, ensure_ascii=False))
+                    dep_ok = False
+            except AttaError as exc:
+                errors.append(_err_from_atta(exc))
+                dep_ok = False
+        summary["patchable_targets"] = patchable_params
+
+    elif kind == KIND_GRAPH:
+        raw_model = spec.get("model") if isinstance(spec.get("model"), Mapping) else {}
+        if "output" not in raw_model or raw_model.get("output") is None:
+            _warn(warnings, "implicit_output", "$.model.output",
+                  "graph.output is omitted and defaults to the last feature",
+                  "Set model.output explicitly before appending features via patch.")
+        try:
+            ops = _load_feature_ops()
+        except AttaError:
+            ops = None
+        ginfo = _lint_graph_model(model, "$.model", ops, errors, warnings)
+        dep_ok = dep_ok and ginfo["dep_ok"]
+        unit_ok = unit_ok and ginfo["unit_ok"]
+        sel_ok = sel_ok and ginfo["sel_ok"]
+        summary["n_features"] = ginfo["n_features"]
+        summary["n_reachable"] = ginfo["n_reachable"]
+        summary["patchable_targets"] = ginfo["patchable_feature_ids"]
+
+    elif kind == KIND_ASSEMBLY:
+        parts = model.get("parts") or []
+        mates = model.get("mates") or []
+        port_map: dict[str, set[str]] = {}
+        has_declared_ports = False
+        for part in parts:
+            if not isinstance(part, Mapping) or not isinstance(part.get("id"), str):
+                continue
+            pid = part["id"]
+            declared = {p["name"] for p in (part.get("ports") or [])
+                        if isinstance(p, Mapping) and isinstance(p.get("name"), str)}
+            if declared:
+                has_declared_ports = True
+            port_map[pid] = _AUTO_PORT_NAMES | declared
+        if mates and not has_declared_ports:
+            _warn(warnings, "auto_ports_only", "$.model.parts",
+                  "assembly has mates but no declared ports (using bbox ports)",
+                  "Declare explicit ports for repeatable mating.")
+
+        for i, mate in enumerate(mates):
+            if not isinstance(mate, Mapping):
+                continue
+            for pfield, part_key in (("port_a", "a"), ("port_b", "b")):
+                pname = mate.get(pfield)
+                pid = mate.get(part_key)
+                if isinstance(pname, str) and isinstance(pid, str) and pid in port_map:
+                    if pname not in port_map[pid]:
+                        port_ok = False
+                        _err(errors, "unknown_port",
+                             "$.model.mates[%d].%s" % (i, pfield),
+                             "part %r has no port %r" % (pid, pname),
+                             "Available ports: %s."
+                             % ", ".join(sorted(port_map[pid])))
+
+        constrained = set()
+        for part in parts:
+            if isinstance(part, Mapping) and isinstance(part.get("id"), str):
+                if part.get("fixed") or part.get("attach") is not None:
+                    constrained.add(part["id"])
+        for mate in mates:
+            if isinstance(mate, Mapping):
+                for key in ("a", "b"):
+                    if isinstance(mate.get(key), str):
+                        constrained.add(mate[key])
+        for i, part in enumerate(parts):
+            if isinstance(part, Mapping) and isinstance(part.get("id"), str):
+                if part["id"] not in constrained:
+                    _warn(warnings, "unconstrained_part",
+                          "$.model.parts[%d]" % i,
+                          "part %r is not fixed, attached, or mated" % part["id"],
+                          "Set fixed=true, attach, or add a mate.")
+
+        try:
+            ops = _load_feature_ops()
+        except AttaError:
+            ops = None
+        for i, part in enumerate(parts):
+            if isinstance(part, Mapping) and isinstance(part.get("graph"), Mapping):
+                ginfo = _lint_graph_model(
+                    part["graph"], "$.model.parts[%d].graph" % i,
+                    ops, errors, warnings)
+                dep_ok = dep_ok and ginfo["dep_ok"]
+                unit_ok = unit_ok and ginfo["unit_ok"]
+                sel_ok = sel_ok and ginfo["sel_ok"]
+
+        summary["n_parts"] = len(parts)
+        summary["n_mates"] = len(mates)
+        summary["patchable_targets"] = [p["id"] for p in parts
+                                        if isinstance(p, Mapping)
+                                        and isinstance(p.get("id"), str)]
+
+    errors = _dedupe_errors(errors)
+    schema_ok = bool(v.get("ok"))
+    patch_ok = len(errors) == 0
+    summary["n_errors"] = len(errors)
+    summary["n_warnings"] = len(warnings)
+    return {
+        "ok": len(errors) == 0,
+        "valid": schema_ok,
+        "kind": kind,
+        "spec": s,
+        "errors": errors,
+        "warnings": warnings,
+        "checks": {
+            "schema": schema_ok,
+            "dependencies": dep_ok and schema_ok,
+            "units": unit_ok and schema_ok,
+            "ports": port_ok and schema_ok,
+            "selectors": sel_ok and schema_ok,
+            "patchability": patch_ok,
+        },
+        "summary": summary,
+    }
+
+
 # ---------------------------------------------------------------------- schema
 
 _RECIPE_EXAMPLE = {
@@ -1960,8 +3026,16 @@ def schema() -> dict:
             "kind": "graph",
             "units": "'mm' (fixed)",
             "segments": "integer >= 3 tessellation default",
-            "features": "array of {id, op, args, inputs}; a DAG in mm",
+            "features": "array of {id, op, args, inputs, tags}; a DAG in mm; "
+                        "extrude/revolve also accept args.segments (line/arc/tangent_arc/circle); "
+                        "fillet/chamfer edges accept common_edge_of, on_face, from_feature",
             "output": "feature id to build; defaults to the last feature",
+        },
+        "patch_contract": {
+            "recipe": "{params, preset, ...} or scalar param keys",
+            "graph": "{features: {fid: {args, inputs, op, tags}}, "
+                     "add_features: [...], remove_features: [...], output, params}",
+            "assembly": "{parts: {pid: {...}}, add_parts, remove_parts, mates, solver}",
         },
         "assembly_model": {
             "kind": "assembly",
@@ -2034,5 +3108,7 @@ __all__ = [
     "validate_spec",
     "propose_spec",
     "compile_spec",
+    "patch_spec",
+    "preflight_spec",
     "schema",
 ]

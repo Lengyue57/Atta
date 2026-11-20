@@ -81,7 +81,7 @@ TOOLS: list[dict] = [
     {
         "name": "atta_doctor",
         "description": (
-            "[Atta v1.1] 引擎自检：引擎版本、Blender 可用性、recipe/spec/feature 数量、"
+            "引擎自检：引擎版本、Blender 可用性、recipe/spec/feature 数量、"
             "当前构建。开始任何建模前先跑它；失败先修环境，不要直接建模。"
         ),
         "inputSchema": _obj({
@@ -91,7 +91,7 @@ TOOLS: list[dict] = [
     {
         "name": "atta_catalog",
         "description": (
-            "[Atta v1.2] 能力目录。默认只返回**紧凑索引**（recipe id + 一行说明 + 类别），"
+            "能力目录。默认只返回**紧凑索引**（recipe id + 一行说明 + 类别），"
             "体积小。要看某个 recipe 的完整参数 schema 就传 recipe=\"<id>\"（可传数组）；"
             "verbose=true 返回全量（很大，仅在没有具体目标时偶然需要）。"
             "不确定 recipe 或参数字段时先调它，不要猜。"
@@ -114,17 +114,23 @@ TOOLS: list[dict] = [
     {
         "name": "atta_spec",
         "description": (
-            "[Atta v1.1] Spec v3 入口：validate 校验/归一化（不建几何），propose 补可解释的"
-            "设计默认值并返回 assumption_ledger，compile 生成可复查脚本，schema 返回能力表。"
+            "Spec v3 入口：validate 校验/归一化（不建几何），propose 补可解释的"
+            "设计默认值并返回 assumption_ledger，compile 生成可复查脚本，"
+            "patch 对 recipe/graph/assembly 做 locate-then-infill 局部补丁，"
+            "preflight 做非构建前置体检（依赖/单位/端口/选择器/可补丁性），schema 返回能力表。"
         ),
         "inputSchema": _obj({
             "op": {
                 "type": "string",
-                "enum": ["validate", "propose", "compile", "schema"],
+                "enum": ["validate", "propose", "compile", "schema", "patch", "preflight"],
                 "default": "validate",
-                "description": "validate | propose | compile | schema",
+                "description": "validate | propose | compile | schema | patch | preflight",
             },
             "spec": _SPEC,
+            "patches": {**_JSON,
+                        "description": "op='patch' 时传入的局部补丁（recipe 参数 / "
+                                       "graph features/add_features/remove_features/output/params / "
+                                       "assembly parts）"},
             "assume": {**_BOOL,
                        "description": "validate 时先补设计默认值（等价于 propose + validate）"},
         }),
@@ -132,14 +138,18 @@ TOOLS: list[dict] = [
     {
         "name": "atta_model",
         "description": (
-            "[Atta v1.1] 建模：recipe + params、Spec v3 或 feature graph 构建；patches 是 "
-            "refine。返回 model_id + facts。建完先 atta_describe 读事实，再 atta_verify 出判决。"
+            "建模：recipe + params、Spec v3 或 feature graph 构建；patches 支持 "
+            "recipe 参数及 graph/assembly 的 locate-then-infill 局部修改。返回 model_id + facts。"
+            "建完先 atta_describe 读事实，再 atta_verify 出判决。"
         ),
         "inputSchema": _obj({
             "recipe": {**_STR, "description": "recipe id，例如 product.mug；先查 atta_catalog"},
             "spec": _SPEC,
-            "params": {**_JSON, "description": "recipe 参数覆盖（mm / deg）"},
-            "patches": {**_JSON, "description": "refine 补丁：对已有 spec/params 的局部覆盖"},
+            "params": {**_JSON, "description": "recipe 或 graph 参数覆盖（mm / deg）"},
+            "patches": {**_JSON,
+                        "description": "refine 补丁：支持 recipe 参数，以及 graph "
+                                       "(features/add_features/remove_features/output/params) "
+                                       "与 assembly (parts) 的 locate-then-infill 局部编辑"},
             "preset": {**_STR, "description": "recipe preset（默认 nominal）"},
             "quality": {"type": "string", "enum": ["draft", "review", "deliver"],
                         "default": "draft", "description": "draft/review/deliver"},
@@ -152,7 +162,7 @@ TOOLS: list[dict] = [
     {
         "name": "atta_variant",
         "description": (
-            "[Atta v1.1] 参数采样/求解：无 targets 时按 ranges 采样排序；给 targets 或 "
+            "参数采样/求解：无 targets 时按 ranges 采样排序；给 targets 或 "
             "solve=true 时用真实草稿网格做约束求解（可行解 + 灵敏度 + 最近可达点），"
             "支持 Pareto。base 是参考模型 id。"
         ),
@@ -189,7 +199,7 @@ TOOLS: list[dict] = [
     {
         "name": "atta_describe",
         "description": (
-            "[Atta v1.1] 结构事实与纯文本感知：bbox/体积/质心/拓扑/壁厚/曲率/探针；"
+            "结构事实与纯文本感知：bbox/体积/质心/拓扑/壁厚/曲率/探针；"
             "perceive=true 返回低功耗 ASCII 轮廓/截面 + 形状特征；trace=true 返回构造步骤；"
             "compare_to=另一个 model_id 返回差异。先读这些，不要靠渲染图猜尺寸。"
         ),
@@ -212,7 +222,7 @@ TOOLS: list[dict] = [
     {
         "name": "atta_verify",
         "description": (
-            "[Atta v1.1] 严格验收：拓扑 + bbox/体积窗口 + 间隙/干涉 + 壁厚/孔，三态 "
+            "严格验收：拓扑 + bbox/体积窗口 + 间隙/干涉 + 壁厚/孔，三态 "
             "pass|degraded|fail，附 receipt。pass 只等于 verdict==pass；degraded 不算 pass。"
         ),
         "inputSchema": _obj({
@@ -227,7 +237,7 @@ TOOLS: list[dict] = [
     {
         "name": "atta_preview",
         "description": (
-            "[Atta v1.1] 判断图与视觉分析：多机位 PNG + 事实卡 + render receipt。"
+            "判断图与视觉分析：多机位 PNG + 事实卡 + render receipt。"
             "mode=beauty 保留旧判断图；studio/catalog/dark/clay 是带摄影棚灯光、"
             "地面和按零件材质的展示渲染；diagnostic 输出 normal/depth/id/curvature/"
             "deviation 通道。每张 beauty 图附带曝光/Zone/CIELAB/对比度/色度/边缘/"
@@ -276,14 +286,15 @@ TOOLS: list[dict] = [
     {
         "name": "atta_deliver",
         "description": (
-            "[Atta v1.1] 交付：先 verify；非 pass 即 block（degraded 需 allow_degraded=true）。"
+            "交付：先 verify；非 pass 即 block（degraded 需 allow_degraded=true）。"
             "通过后导出 GLB/OBJ/STL + manifest（sha256 + verify receipt）；"
-            "图形子集可用 formats=[\"step\"] 交付解析 B-rep。"
+            "图形子集可用 formats=[\"step\"] 交付解析 B-rep；"
+            "可用 formats=[\"dxf\", \"svg_drawing\"] 导出 2D 工程图（支持 OCCT HLR / mesh HLR 回退）。"
         ),
         "inputSchema": _obj({
             "model_id": {**_STR, "description": "模型 id；省略 = 当前模型"},
             "formats": {"type": "array", "items": _STR,
-                        "description": "glb/obj/stl/blend/step，默认 glb/obj/stl"},
+                        "description": "glb/obj/stl/blend/step/dxf/svg_drawing，默认 glb/obj/stl"},
             "outdir": {**_STR, "description": "输出目录（默认 _atta/out）"},
             "allow_degraded": {**_BOOL,
                                "description": "true 才允许 degraded 交付；pass 不受影响"},
@@ -297,7 +308,7 @@ TOOLS: list[dict] = [
     {
         "name": "atta_run",
         "description": (
-            "[Atta v1.1] 一次调用跑多步流水线（model→describe→verify→preview→deliver）。"
+            "一次调用跑多步流水线（model→describe→verify→preview→deliver）。"
             "步骤可命名、结果按 name 找回；禁止嵌套 atta_run。默认遇错即停。"
         ),
         "inputSchema": _obj({
@@ -314,7 +325,7 @@ TOOLS: list[dict] = [
     {
         "name": "atta_conjure",
         "description": (
-            "[Atta v1.21] 无数据虚构建模。给一个语义标签（中英文均可，如 "
+            "无数据虚构建模。给一个语义标签（中英文均可，如 "
             "'rifle magazine' / '一颗星球' / 'fantasy sword'），按内置原型表 + 比例规则 + "
             "种子，直接发明一套可信的参数与构建方案，不需要上网查真实尺寸。"
             "每个数值都标注 provenance：measured（你给的）/ archetype（原型比例）/ "
@@ -342,7 +353,7 @@ TOOLS: list[dict] = [
     {
         "name": "atta_design",
         "description": (
-            "[Atta v1.21] 设计法则检查。verify 只判“是不是合法实体”，它判“形体读不读得懂、"
+            "设计法则检查。verify 只判“是不是合法实体”，它判“形体读不读得懂、"
             "能不能造”：轮廓可读性（缩小后是否还认得出）、负空间、形体三级层次、比例、对称、"
             "可打印性（最小壁厚/悬垂）、可脱模（拔模角）、可加工（内角半径）。"
             "每条返回 ok/value/advice；ok=null 表示不适用。模型可以通过 verify 却在这里失败——"
@@ -366,9 +377,12 @@ TOOLS: list[dict] = [
     },
 ]
 
+_VERSION_TAG = "[Atta v%s] " % VERSION
 for _tool in TOOLS:
-    _tag = "[Atta v%s]" % VERSION
-    _tool["description"] = _tag + _tool["description"].partition("]")[2]
+    _desc = str(_tool["description"]).lstrip()
+    if _desc.startswith("[Atta"):
+        _desc = _desc.partition("]")[2].lstrip()
+    _tool["description"] = _VERSION_TAG + _desc
 
 TOOL_NAMES: tuple[str, ...] = tuple(t["name"] for t in TOOLS)
 TOOL_BY_NAME: dict[str, dict] = {t["name"]: t for t in TOOLS}
@@ -397,9 +411,9 @@ def _schema_keys(name: str) -> set[str]:
     return set(props)
 
 
-def _clean_args(name: str, arguments: Any) -> dict:
+def _clean_args_with_warnings(name: str, arguments: Any) -> tuple[dict, list[dict]]:
     if arguments is None:
-        return {}
+        return {}, []
     if not isinstance(arguments, dict):
         raise AttaError(
             "bad_arguments",
@@ -408,9 +422,27 @@ def _clean_args(name: str, arguments: Any) -> dict:
             fix='pass {"key": value}',
         )
     keys = _schema_keys(name)
-    # Drop unknown keys and explicit nulls so agent hallucinations cannot turn
-    # into TypeError inside the engine.
-    return {k: v for k, v in arguments.items() if k in keys and v is not None}
+    cleaned: dict[str, Any] = {}
+    warnings: list[dict] = []
+    valid_hint = ", ".join(sorted(keys)) or "(none)"
+    for k, v in arguments.items():
+        if k not in keys:
+            warnings.append({
+                "code": "ignored_argument",
+                "argument": str(k),
+                "path": str(k),
+                "message": "unknown argument %r for %s was ignored" % (k, name),
+                "fix": "valid arguments for %s: %s" % (name, valid_hint),
+            })
+            continue
+        if v is not None:
+            cleaned[k] = v
+    return cleaned, warnings
+
+
+def _clean_args(name: str, arguments: Any) -> dict:
+    cleaned, _ = _clean_args_with_warnings(name, arguments)
+    return cleaned
 
 
 #: A failure without a patch is a dead end for an agent.  When an error carries
@@ -724,7 +756,7 @@ def _catalog(engine, args: dict) -> Any:
 
 def _spec(engine, args: dict) -> Any:
     op = str(args.get("op") or "validate").strip().lower()
-    allowed = {"validate", "propose", "compile", "schema"}
+    allowed = {"validate", "propose", "compile", "schema", "patch", "preflight"}
     if op not in allowed:
         raise AttaError(
             "bad_arguments",
@@ -732,11 +764,14 @@ def _spec(engine, args: dict) -> Any:
             path="op",
             fix="use one of: %s" % ", ".join(sorted(allowed)),
         )
-    return engine.spec(
-        spec=args.get("spec"),
-        op=op,
-        assume=bool(args.get("assume", False)),
-    )
+    kwargs: dict[str, Any] = {
+        "spec": args.get("spec"),
+        "op": op,
+        "assume": bool(args.get("assume", False)),
+    }
+    if op == "patch" or args.get("patches") is not None:
+        kwargs["patches"] = args.get("patches")
+    return engine.spec(**kwargs)
 
 
 def _model(engine, args: dict) -> Any:
@@ -1057,14 +1092,17 @@ def _ergonomic(tool: str, data: Any) -> Any:
 
 
 def _envelope(tool: str, ok: bool, data: Any, error: dict | None,
-              started: float) -> dict:
-    return {
+              started: float, warnings: list[dict] | None = None) -> dict:
+    out = {
         "ok": bool(ok),
         "tool": tool,
         "data": data,
         "error": error,
         "ms": round((time.perf_counter() - started) * 1000.0, 3),
     }
+    if warnings:
+        out["warnings"] = list(warnings)
+    return out
 
 
 def _run_with_timeout(fn, timeout: float, name: str):
@@ -1110,8 +1148,9 @@ def call_tool(name: str, args: Any = None, timeout: float | None = None) -> dict
         }, started)
 
     with _CALL_LOCK:
+        warnings: list[dict] = []
         try:
-            clean = _clean_args(tool_name, args)
+            clean, warnings = _clean_args_with_warnings(tool_name, args)
             engine = _engine()
             handler = _HANDLERS[tool_name]
             if timeout is None:
@@ -1120,9 +1159,10 @@ def call_tool(name: str, args: Any = None, timeout: float | None = None) -> dict
                 data = _run_with_timeout(
                     lambda: handler(engine, clean), float(timeout), tool_name)
             return _envelope(tool_name, True, _ergonomic(tool_name, data),
-                             None, started)
+                             None, started, warnings=warnings)
         except Exception as exc:  # noqa: BLE001 - the protocol gets values only
-            return _envelope(tool_name, False, None, _error_from(exc), started)
+            return _envelope(tool_name, False, None, _error_from(exc),
+                             started, warnings=warnings)
 
 
 def tool_schemas() -> list[dict]:

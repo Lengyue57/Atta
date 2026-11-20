@@ -56,22 +56,31 @@
 - 每个 feature：`{"id", "op", "args", "inputs"}`。
 - `args` 里的长度都是 **mm**；`units` 默认 `mm`。
 
-### 全部可用 op（25 个，`atta_catalog` 实测）
+### 全部可用 op（56+ 个，`atta_catalog` 实测）
 
 | 类别 | op |
 |---|---|
-| 基本体 | `box` `cylinder` `sphere` `cone` `torus` |
-| 曲面 | `revolve` `loft` `sweep` `coons` `gordon` `extrude` `thicken` `offset` |
-| 布尔 | `union` `difference` `intersection` |
-| 阵列/变换 | `mirror` `transform` `pattern_linear` `pattern_polar` |
-| 装饰 | `lobes` `text_emboss` `text_engrave` |
-| 隐式场 | `sdf` `gyroid` |
+| 基本体 | `box` `cylinder` `sphere` `cone` `torus` `polyhedron` `heightmap` |
+| 曲面与扫掠 | `revolve` `loft` `loft2` `sweep` `sweep2` `pipe` `coons` `gordon` `nurbs_surface` `extrude` `projection_extrude` `thicken` `offset` `subdivide` `repair` |
+| 精确倒角/圆角 | `fillet` `chamfer`（支持 `common_edge_of` / `on_face` / `from_feature` 与面 `tags`） |
+| 布尔与凸包 | `union` `weld_union` `difference` `intersection` `hull` `minkowski` |
+| 阵列/变换/变形 | `mirror` `transform` `pattern_linear` `pattern_polar` `deform` `morph` |
+| 装饰与文字 | `lobes` `text_emboss` `text_engrave` |
+| 隐式场与语法 | `sdf` `sdf_blend` `gyroid` `field_tree` `shape_grammar` `lsystem` |
+| 生物形态 | `capsid` `branch_tree` `pyramidal_neuron` `diatom_frustule` `perforated_valve` `perforated_cylinder` `lattice_shell` `pore_field_shell` `ring_stack` `skeleton` `silhouette` |
+
+> 完整 op 与每个字段的实时 schema 以 `atta_catalog(feature="<op>")` 为准。
 
 ### 常用 args
 
 ```jsonc
 {"op":"revolve","args":{"profile_rz":[[0,0],[30,0],[42,60],[38,95],[0,95]],
                         "segments":96}}
+{"op":"extrude","args":{"segments":[
+  {"type":"line","to":[40,0],"tag":"bottom"},
+  {"type":"arc","to":[40,20],"via":[46,10],"tag":"r_arc"},
+  {"type":"line","to":[0,20],"tag":"top"}], "height":6}}
+{"op":"fillet","inputs":["plate"],"args":{"radius":1.5,"common_edge_of":["cap","side"]}}
 {"op":"loft","args":{"rings":[[[x,y,z],...], [...]]}}
 {"op":"sweep","args":{"section_xy":[[x,y],...],"path":[[x,y,z],...],
                       "twist_deg":0,"scale_end":1.0}}
@@ -82,6 +91,9 @@
 {"op":"lobes","args":{"count":12,"amplitude":0.03,"phase_deg":0,"twist_deg":0}}
 {"op":"sdf","args":{"size":[40,30,20],"field":"gyroid","period":30,"thickness":3.6}}
 ```
+
+- `extrude` / `revolve` 也支持声明式 `segments`（`line` / `arc` / `tangent_arc` / `circle`）与可选面 `tags`，圆弧段在 B-rep/STEP 中保持真圆弧边。
+- `fillet` / `chamfer` 支持按拓扑选择器 `common_edge_of`、`on_face`、`from_feature` 选边，无需硬编码数字边索引。
 
 - `revolve.profile_rz` 是 `[r, z]` 点列（**不是** `[x,z]`）。首末点若 `r=0`
   会自动封轴；若首末 `r>0` 则开口。
@@ -118,9 +130,11 @@
 | op | 作用 | 会不会建几何 |
 |---|---|---|
 | `validate` | 校验 + 归一化，返回 `errors[]` | 否 |
+| `preflight` | 快速静态 lint（依赖/单位/端口/选择器），不建几何 | 否 |
 | `validate` + `assume=true` | 先 propose 再 validate | 否 |
 | `propose` | 补设计默认值，返回 `assumption_ledger` / `unresolved` | 否 |
 | `compile` | 解析成最终 params/features | 否 |
+| `patch` | locate-then-infill 局部更新 recipe/graph/assembly 并返回 delta | 否 |
 | `schema` | 返回字段文档 | 否 |
 
 `propose` 只填**可解释的默认值**。`unresolved` 里的东西（`hole.at`、
@@ -132,7 +146,7 @@
 | 错误 | 原因 |
 |---|---|
 | `spec.schema must be 'atta.spec/v3'` | schema 字符串写错 |
-| `unknown feature op` | op 不在 25 个里 |
+| `unknown feature op` | op 不在 `atta_catalog` 合法列表里 |
 | `duplicate_id` | 两个 feature 同 id |
 | `unknown_input` | `inputs` 引用了不存在的 id |
 | `cycle` | feature 依赖成环 |

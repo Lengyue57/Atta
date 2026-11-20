@@ -9,12 +9,16 @@ Python（numpy）把几何算出来、量一遍、检查一遍，然后才去渲
 包围盒、体积、壁厚、拓扑这些实际数字，不用对着截图猜形状；交付之前也能先确认它是不是
 一个闭合实体。
 
-**当前版本：atta-1.2.2beta**（Python 侧 `1.2.2b3`，插件包 `1.2.2-beta.3`）。
-12 个工具、23 个 recipe、47 个 feature op。Blender 可选。
+**当前版本：atta-1.2.3beta**（Python 侧 `1.2.3b1`，插件包 `1.2.3-beta.1`）。
+12 个工具、46 个 recipe、56+ 个 feature op、53 种材质。Blender 可选。
 
-这一版新增了有理 NURBS 曲面、精确 CAD 圆角/倒角（STEP 与网格同源）、有界组合场、
-定向模块装配、跨操作的质量传播，以及一组生物形态算子。相机、贴图和外观拆到了独立的
-`basid` 程序里（见 [BASID.md](docs/BASID.md)）。具体能力和已知限制见[发布说明](docs/RELEASE-1.2.2beta.md)。
+这一版在 v1.2.3-geometry（46 个闭合 recipe、56+ op、692 条 corpus 全 12 类达标）基础上，
+新增了 3D 自交与封闭性计量（`SIR`/`DangEL`/`FluxEE`）、3D 模型对比（`chamfer_mm`/
+`hausdorff_p95_mm`/`volumetric_iou`）、2D DXF/SVG 工程图交付（`dxf`/`svg_drawing`）、
+声明式 2D 草图 `segments` 与 KCL 风格面 `tags`/`common_edge_of`、局部增量图编辑
+（`patch`/`preflight`）、`stability` 稳定性检查，以及 Antigravity 宿主一键安装。
+相机、贴图和外观拆到了独立的 `basid` 程序里（见 [BASID.md](docs/BASID.md)）。
+具体能力和已知限制见[发布说明](docs/RELEASE-1.2.3beta.md)。
 
 ## 基本思路
 
@@ -50,7 +54,7 @@ pip install -e ".[dev]"    # pytest + jsonschema，跑测试用
 
 ```bash
 python3 -m atta doctor --deep                 # 1. 检查环境
-python3 -m atta catalog --verbose             # 2. 看看能建什么（23 个 recipe）
+python3 -m atta catalog --verbose             # 2. 看看能建什么（46 个 recipe）
 python3 -m atta model --recipe product.mug    # 3. 建一个草稿，不到一秒
 python3 -m atta describe --wall               # 4. 看测量结果
 python3 -m atta perceive --res 24             # 5. 用 ASCII 看形状，不用渲染
@@ -92,23 +96,27 @@ closed=yes; genus=1; comps=1; convex=0.19; sym=y; holes~1; dih95=3.7
 |---|---|
 | `atta_doctor` | 环境与能力自检，建议第一个跑。 |
 | `atta_catalog` | 列出 recipe、feature op、材质、视角和导出格式，含参数 schema。 |
-| `atta_spec` | 对 Spec v3 做 `validate` / `propose` / `compile` / `schema`，不生成几何。 |
-| `atta_model` | 用 recipe、spec 或 feature graph 建模；`patches=` 修改已有 spec。 |
+| `atta_spec` | 对 Spec v3 做 `validate` / `preflight` / `propose` / `compile` / `patch` / `schema`，不生成几何。 |
+| `atta_model` | 用 recipe、spec 或 feature graph 建模；`patches=` 修改已有 recipe 或 graph/assembly 节点。 |
 | `atta_variant` | 在参数空间里采样，或者按测量指标反求参数。 |
-| `atta_describe` | 测量数据、空间探测、ASCII 感知、构造记录、轮廓对比。 |
+| `atta_describe` | 测量数据（含 SIR/DangEL/FluxEE）、空间探测、ASCII 感知、构造记录、2D+3D 对比（`chamfer_mm`/`volumetric_iou`）。 |
 | `atta_verify` | 给出判定和回执（`spec_hash`、`mesh_hash`、逐项检查、`fix`）。 |
 | `atta_preview` | 展示图/诊断图 + 图像统计。用来看，不用来验收。 |
-| `atta_deliver` | 先 verify，再导出 GLB/OBJ/STL/BLEND（graph spec 还能导出 STEP）。 |
+| `atta_deliver` | 先 verify，再导出 GLB/OBJ/STL/BLEND、2D `dxf`/`svg_drawing` 工程图（graph 子集可导 STEP）。 |
 | `atta_run` | 一次调用跑多步流程，用 `$prev` 串联上一步的 id。 |
 | `atta_conjure` | 根据原型表生成一套参数化构建方案（适合虚构题材），并记录参数来源。 |
-| `atta_design` | 检查设计规则和工艺约束。模型可能 verify 通过，但这里不通过。 |
+| `atta_design` | 检查设计规则和工艺约束（含 `stability`）。模型可能 verify 通过，但这里不通过。 |
 
 ## 不只是基本体
 
-- **精确 CAD**：按几何条件选边，OCCT 共享拓扑细分，网格和 STEP 来自同一次构造。
-  见 [CAD_FEATURES.md](docs/CAD_FEATURES.md)。
-- **NURBS 与有界场**：采样有理曲面和可组合的场，会报告误差和预算。见
-  [NURBS.md](docs/NURBS.md)、[FIELD_TREE.md](docs/FIELD_TREE.md)。
+- **精确 CAD 与草图**：`extrude`/`revolve` 支持声明式 2D `segments`（`line`/`arc`/`tangent_arc`/`circle`），
+  primitives/`extrude`/`revolve` 支持面 `tags` 与 `common_edge_of`/`on_face`/`from_feature` 拓扑选边，
+  OCCT 共享拓扑细分，网格和 STEP 来自同一次构造。见 [CAD_FEATURES.md](docs/CAD_FEATURES.md)。
+- **2D 工程图**：`deliver(formats=["dxf","svg_drawing"])` 导出分层 DXF 与三视图+轴测 SVG
+  工程图（B-rep 支持时走 OCCT HLR，否则自动回退纯 numpy `mesh_hlr`）。
+- **NURBS、有界场与语法**：采样有理曲面、可组合的场（`field_tree`）以及 `shape_grammar`/
+  `lsystem` 语法算子，会报告误差和预算。见 [NURBS.md](docs/NURBS.md)、
+  [FIELD_TREE.md](docs/FIELD_TREE.md)、[GRAMMAR.md](docs/GRAMMAR.md)。
 - **模块装配**：定向端口、确定性 attach、mates/DOF、碰撞检查，以及精确/网格混合的 STEP。
   见 [MODULE_ASSEMBLY.md](docs/MODULE_ASSEMBLY.md)。
 - **生物形态**：衣壳、硅藻、神经元、穿孔阀、晶格壳、环堆叠等 graph op。只做形状，不做生物模拟。
@@ -152,13 +160,16 @@ closed=yes; genus=1; comps=1; convex=0.19; sym=y; holes~1; dih95=3.7
 }
 ```
 
-目前共 47 个 op：基本体、`revolve`/`loft`/`loft2`/`sweep`/`sweep2`、Coons/Gordon 曲面、
-`nurbs_surface`、`extrude`、`thicken`、布尔运算、阵列、`transform`/`mirror`、
-`fillet`/`chamfer`、`offset`/`repair`/`subdivide`、隐式的 `gyroid`/`sdf`/`sdf_blend`/`field_tree`、
+目前共 56+ 个 op：基本体（`box`/`cylinder`/`sphere`/`cone`/`torus`/`polyhedron`/
+`heightmap`）、`revolve`/`loft`/`loft2`/`sweep`/`sweep2`/`pipe`、Coons/Gordon 曲面、
+`nurbs_surface`、`extrude`/`projection_extrude`、`thicken`、布尔与 `hull`/`minkowski`、
+阵列、`transform`/`mirror`/`deform`/`morph`、`fillet`/`chamfer`、`offset`/`repair`/
+`subdivide`、隐式 `gyroid`/`sdf`/`sdf_blend`/`field_tree`、`shape_grammar`/`lsystem`、
 文字，以及生物形态算子（`capsid`、`branch_tree`、`pyramidal_neuron`、`diatom_frustule`、
-`perforated_valve`、`perforated_cylinder`、`lattice_shell`、`pore_field_shell`、`ring_stack`）。
-feature 的 `args` 单位是 mm，可以写 `{"$param": "w"}` 或 `{"$expr": "w/2+4"}`
-（只支持有限的算术表达式，不是 `eval`）。完整字段用 `python3 -m atta catalog --verbose` 查看。
+`perforated_valve`、`perforated_cylinder`、`lattice_shell`、`pore_field_shell`、`ring_stack`、
+`skeleton`、`silhouette`）。feature 的 `args` 单位是 mm，可以写 `{"$param": "w"}` 或
+`{"$expr": "w/2+4"}`（只支持有限的算术表达式，不是 `eval`）。完整字段用
+`python3 -m atta catalog --verbose` 查看。
 
 ## 接入 agent
 
@@ -201,6 +212,16 @@ dsh plugin --profile web add https://github.com/laszapens/Atta.git
 dsh plugin --profile web add 'https://github.com/laszapens/Atta.git#path:/plugin'
 ```
 
+### Antigravity
+
+```bash
+python3 -m atta.agent.install antigravity --print    # 预览 plugin.json 与 mcp_config.json
+python3 -m atta.agent.install antigravity --create   # 写入/同步 ~/.gemini/config/plugins/atta
+```
+
+会生成 `plugin.json`（来自 [`plugins/antigravity/plugin.json`](plugins/antigravity/plugin.json)）、
+绝对路径的 `mcp_config.json`、`assets/logo.svg` 并同步 `skills/atta/`，不会改动已有 `_atta/` 工作区。
+
 ### ZCode
 
 两种方式选一种：用上面的 MCP 配置就能用全部工具；装原生插件的话还会多一个路由 skill 和本地插件市场。
@@ -236,6 +257,7 @@ curl -s -X POST localhost:8765/call -H 'content-type: application/json' \
 | `doctor`、`catalog`、`spec` | 可用 | 可用 |
 | `model`、`variant`、`describe`、`perceive`、`verify`、`run` | 可用 | 可用 |
 | `deliver --formats step`（graph spec + `build123d`） | 可用 | 可用 |
+| `deliver --formats dxf,svg_drawing` | 可用（OCCT HLR 或 `mesh_hlr`） | 可用 |
 | `deliver --formats glb,obj,stl,blend` | 不可用（每个文件报 `blender_unavailable`，`status: "partial"`） | 可用 |
 | `preview`（任何模式） | 不可用（`blender_unavailable`） | 可用 |
 
@@ -252,7 +274,7 @@ Atta 默认在 `PATH` 里找 Blender，也可以用 `ATTA_BLENDER=/path/to/blend
 |---|---|
 | `blender_unavailable` | 没装 Blender 或不在 `PATH` 里。几何、测量、验收、`perceive` 都不受影响，只有渲染和网格导出才需要装 Blender 或设置 `ATTA_BLENDER`。`deliver --formats step` 不需要 Blender。 |
 | `no_models` | 工作区里还没有模型，或者 `ATTA_HOME` 指到了别的目录。先跑一次 `model`，或者传入之前得到的 `model_id`。 |
-| `unknown_recipe` | id 拼错了。报错的 `fix` 里列出了全部 23 个可用 id，参数可以用 `catalog` 查。 |
+| `unknown_recipe` | id 拼错了。报错的 `fix` 里列出了全部 46 个可用 id，参数可以用 `catalog` 查。 |
 | 建模返回 `status: "repaired"` | 有参数超出范围被截断了。看一下 `applied_patches` / `issues`，拿到的模型和你要求的不完全一样。 |
 | `deliver` 返回 `status: "blocked"` | `verify` 没通过。按 `verify.issues` 第一条的 `fix` 改完再重建；`degraded` 需要加 `allow_degraded=true`。 |
 | 宿主插件 `import atta` 失败 | 宿主用的 Python 不是你的 venv。把 `ATTA_PYTHON` 指向 venv 里的 python，或者用宿主的解释器执行 `pip install -e .`。 |

@@ -16,13 +16,13 @@
 [ ] spec validate 通过
 [ ] model 返回 model_id
 [ ] describe: closed / genus / n_components 符合预期
-[ ] describe: aspect 符合设计比例
-[ ] verify verdict == "pass"（不是 degraded）
+[ ] describe: aspect 符合设计比例；若非平躺/悬臂注意跑 atta_design(rules=["stability"])
+[ ] verify verdict == "pass"（不是 degraded），SIR / DangEL / FluxEE 正常
 [ ] 关键尺寸有 constraint 覆盖，不是"看起来对"
 [ ] 壁厚 ≥ 工艺最小值；声称可制造时用 strict
 [ ] 所有外露硬边有 bevel / 圆角
 [ ] preview 最多 1-2 张（如果看了）
-[ ] deliver status == "ok"
+[ ] deliver status == "ok"（3D 导出或 `dxf` / `svg_drawing` 工程图）
 [ ] 回复含 model_id + verdict + 尺寸 + 路径
 ```
 

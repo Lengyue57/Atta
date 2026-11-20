@@ -28,7 +28,8 @@ SUPPORTED = (
     "bbox", "volume_mm3", "min_wall_mm", "genus", "closed", "n_components",
     "dihedral_max_deg", "curvature_p95_deg", "clearance", "interference",
     "interfaces", "envelope", "holes", "render", "render_receipt",
-    "silhouette_iou", "name", "material",
+    "silhouette_iou", "max_self_intersection_ratio", "mesh_agreement",
+    "name", "material",
 )
 
 
@@ -243,6 +244,115 @@ def _silhouette_checks(checks, mesh, spec, severity):
                "parameters. describe(probe='form') shows the +/- overlay")
 
 
+def _mesh_agreement_checks(checks, mesh, spec, reference_mesh):
+    """Evaluate 3D geometric agreement (Chamfer, Hausdorff-95, Volumetric IoU)."""
+    if not isinstance(spec, dict):
+        _malformed(checks, "mesh_agreement",
+                   _Malformed("%r is not an object" % (spec,)),
+                   "pass {target_model_id|reference_mesh, chamfer_max_mm, "
+                   "hausdorff_p95_max_mm, volumetric_iou_min}")
+        return
+    ref = reference_mesh
+    target_id = spec.get("target_model_id") or spec.get("target")
+    if ref is None and target_id:
+        try:
+            from . import state as _state
+            rec = _state.get(str(target_id))
+            if not rec:
+                _check(checks, "mesh_agreement", False, "error",
+                       {"target_model_id": target_id}, "resolved reference mesh",
+                       "target model %r is not in this workspace" % (target_id,),
+                       "build the target first, or pass reference_mesh=Mesh(...)")
+                return
+            from . import engine as _engine
+            _, ref, _ = _engine._load(str(target_id))
+        except Exception as exc:  # noqa: BLE001
+            _check(checks, "mesh_agreement", False, "error",
+                   {"target_model_id": target_id}, "resolved reference mesh",
+                   "could not load target model %r: %s" % (target_id, exc),
+                   "build a valid target model or pass reference_mesh=Mesh(...)")
+            return
+    if ref is None:
+        _check(checks, "mesh_agreement", False, "error",
+               None, "reference_mesh",
+               "mesh_agreement requires reference_mesh or target_model_id",
+               "pass reference_mesh=Mesh(...) or target_model_id='mdl_...'")
+        return
+
+    cmax_ok, cmax = _bound(checks, "mesh_agreement.chamfer_mm",
+                           spec.get("chamfer_max_mm"),
+                           "pass chamfer_max_mm as a finite number in mm")
+    hmax_ok, hmax = _bound(checks, "mesh_agreement.hausdorff_p95_mm",
+                           spec.get("hausdorff_p95_max_mm"),
+                           "pass hausdorff_p95_max_mm as a finite number in mm")
+    iou_ok, iou_min = _bound(checks, "mesh_agreement.volumetric_iou",
+                             spec.get("volumetric_iou_min"),
+                             "pass volumetric_iou_min as a finite number in [0, 1]")
+    if iou_ok and iou_min is not None and not (0.0 <= iou_min <= 1.0):
+        _malformed(checks, "mesh_agreement.volumetric_iou",
+                   _Malformed("volumetric_iou_min must be in [0, 1]"),
+                   "pass volumetric_iou_min in [0.0, 1.0]")
+        iou_ok = False
+    if cmax_ok and cmax is not None and cmax < 0.0:
+        _malformed(checks, "mesh_agreement.chamfer_mm",
+                   _Malformed("chamfer_max_mm must be >= 0"),
+                   "pass chamfer_max_mm >= 0.0")
+        cmax_ok = False
+    if hmax_ok and hmax is not None and hmax < 0.0:
+        _malformed(checks, "mesh_agreement.hausdorff_p95_mm",
+                   _Malformed("hausdorff_p95_max_mm must be >= 0"),
+                   "pass hausdorff_p95_max_mm >= 0.0")
+        hmax_ok = False
+
+    n_samples = 4000
+    if "n_samples" in spec and spec["n_samples"] is not None:
+        ns_ok, ns = _bound(checks, "mesh_agreement", spec["n_samples"],
+                           "pass n_samples as a positive integer")
+        if not ns_ok:
+            return
+        n_samples = max(1, int(ns))
+
+    has_any = any(v is not None for v in (
+        spec.get("chamfer_max_mm"),
+        spec.get("hausdorff_p95_max_mm"),
+        spec.get("volumetric_iou_min"),
+    ))
+    if not has_any:
+        _check(checks, "mesh_agreement", False, "error", spec,
+               "at least one threshold",
+               "mesh_agreement specifies no thresholds",
+               "add chamfer_max_mm, hausdorff_p95_max_mm, or volumetric_iou_min")
+        return
+    if not (cmax_ok and hmax_ok and iou_ok):
+        return
+
+    cmp = probe.compare_meshes_3d(ref, mesh, n_samples=n_samples)
+    if cmax is not None:
+        got = float(cmp["chamfer_mm"])
+        ok = math.isfinite(got) and got <= cmax
+        _check(checks, "mesh_agreement.chamfer_mm", ok, "error", got,
+               "<=%.4f" % cmax,
+               "3D Chamfer distance %.4f mm within limit" % got if ok
+               else "3D Chamfer distance %.4f mm exceeds %.4f mm" % (got, cmax),
+               "adjust proportions/dimensions to match the reference mesh")
+    if hmax is not None:
+        got = float(cmp["hausdorff_p95_mm"])
+        ok = math.isfinite(got) and got <= hmax
+        _check(checks, "mesh_agreement.hausdorff_p95_mm", ok, "error", got,
+               "<=%.4f" % hmax,
+               "3D Hausdorff-95 %.4f mm within limit" % got if ok
+               else "3D Hausdorff-95 %.4f mm exceeds %.4f mm" % (got, hmax),
+               "fix localized geometric deviation from the reference mesh")
+    if iou_min is not None:
+        got = float(cmp["volumetric_iou"])
+        ok = math.isfinite(got) and got >= iou_min
+        _check(checks, "mesh_agreement.volumetric_iou", ok, "error", got,
+               ">=%.4f" % iou_min,
+               "volumetric IoU %.4f meets minimum" % got if ok
+               else "volumetric IoU %.4f below minimum %.4f" % (got, iou_min),
+               "align position, size, and boolean features with the reference mesh")
+
+
 def _receipt_dict(receipt):
     if isinstance(receipt, dict):
         return receipt
@@ -438,7 +548,8 @@ def _detect_holes(mesh: M.Mesh) -> list[dict]:
 
 def verify(mesh: M.Mesh, *, constraints=None, expected_genus=None,
            level="standard", render_receipt=None, parts=None,
-           assumptions=None) -> dict:
+           assumptions=None, reference_mesh: M.Mesh | None = None,
+           kernel_mesh: M.Mesh | None = None) -> dict:
     level = str(level or "standard").lower()
     if level not in LEVELS:
         level = "standard"
@@ -535,11 +646,103 @@ def verify(mesh: M.Mesh, *, constraints=None, expected_genus=None,
     need_wall = gates and "min_wall_mm" in cons
     need_curv = gates and "curvature_p95_deg" in cons
     metrics = metrology.measure(mesh, wall=need_wall, dihedral=True,
-                                curvature=need_curv)
+                                curvature=need_curv, self_intersect=gates)
     dih = metrics["dihedral"]
     wall = metrics.get("wall")
     curv = metrics.get("curvature")
     bbox = metrics["bbox_mm"]
+
+    flux_err = float(metrics.get("flux_enclosure_error", 0.0))
+    flux_ok = math.isfinite(flux_err) and flux_err <= 1e-3
+    _check(checks, "flux_enclosure_error", flux_ok, "error", flux_err,
+           "<=1e-3",
+           "Gauss divergence flux enclosure residual within limit" if flux_ok
+           else "flux enclosure residual %.4g exceeds 1e-3 (open or inverted faces)"
+           % flux_err,
+           "close open boundary edges and ensure consistent outward winding "
+           "(atta.mesh.oriented)")
+
+    if not gates:
+        if "max_self_intersection_ratio" in cons:
+            _skip(checks, "self_intersection_ratio", level,
+                  "self-intersection checks require BVH triangle tests")
+    else:
+        sir_ok = True
+        sir_limit = 0.0
+        if cons.get("max_self_intersection_ratio") is not None:
+            sir_ok, sir_limit = _bound(
+                checks, "self_intersection_ratio",
+                cons["max_self_intersection_ratio"],
+                "pass max_self_intersection_ratio as a finite number in [0, 1]")
+            if sir_ok and sir_limit is not None and not (0.0 <= sir_limit <= 1.0):
+                _malformed(checks, "self_intersection_ratio",
+                           _Malformed("max_self_intersection_ratio must be in [0, 1]"),
+                           "pass max_self_intersection_ratio in [0.0, 1.0]")
+                sir_ok = False
+        if sir_ok:
+            ev_si = metrics.get("self_intersection") or {}
+            # Cosmetic finish bevels (Blender BEVEL on triangulated booleans)
+            # can introduce minor bevel-only overlaps on an otherwise clean
+            # kernel solid.  Unless the caller explicitly constrains the
+            # evaluated mesh via max_self_intersection_ratio, gate the kernel
+            # solid for self-intersection and report any bevel-only SIR as info.
+            use_kernel_sir = (
+                kernel_mesh is not None
+                and kernel_mesh is not mesh
+                and "max_self_intersection_ratio" not in cons
+            )
+            use_per_part_sir = (
+                isinstance(parts, dict)
+                and bool(parts)
+                and "max_self_intersection_ratio" not in cons
+            )
+            if use_per_part_sir:
+                worst_sir = 0.0
+                worst_pairs = 0
+                worst_part = None
+                for pid, pmesh in parts.items():
+                    psi = metrology.self_intersection(pmesh)
+                    psir = float(psi.get("self_intersection_ratio", 0.0))
+                    ppairs = int(psi.get("intersecting_pairs", 0))
+                    if psir > worst_sir or (psir == worst_sir and ppairs > worst_pairs):
+                        worst_sir, worst_pairs, worst_part = psir, ppairs, pid
+                ok = worst_sir <= sir_limit
+                _check(checks, "self_intersection_ratio", ok, quality_sev, worst_sir,
+                       "<=%.6g" % sir_limit,
+                       "no non-adjacent self-intersections across %d parts" % len(parts)
+                       if ok else "self-intersecting triangles in part %s (ratio=%.6g, pairs=%d)"
+                       % (worst_part, worst_sir, worst_pairs),
+                       "eliminate overlapping/folded geometry or fix boolean/revolve "
+                       "profiles before delivery")
+            elif use_kernel_sir:
+                si_info = metrology.self_intersection(kernel_mesh)
+                sir = float(si_info.get("self_intersection_ratio", 0.0))
+                ok = sir <= sir_limit
+                _check(checks, "self_intersection_ratio", ok, quality_sev, sir,
+                       "<=%.6g" % sir_limit,
+                       "no non-adjacent self-intersections" if ok
+                       else "self-intersecting triangles detected (ratio=%.6g, pairs=%d)"
+                       % (sir, int(si_info.get("intersecting_pairs", 0))),
+                       "eliminate overlapping/folded geometry or fix boolean/revolve "
+                       "profiles before delivery")
+                ev_sir = float(ev_si.get("self_intersection_ratio", 0.0))
+                if ev_sir > 0.0:
+                    _check(checks, "bevel_self_intersection_ratio", True, "info",
+                           ev_sir, None,
+                           "cosmetic Blender bevel introduced %d overlapping pairs "
+                           "(ratio=%.6g); raw kernel mesh is clean"
+                           % (int(ev_si.get("intersecting_pairs", 0)), ev_sir))
+            else:
+                si_info = ev_si
+                sir = float(si_info.get("self_intersection_ratio", 0.0))
+                ok = sir <= sir_limit
+                _check(checks, "self_intersection_ratio", ok, quality_sev, sir,
+                       "<=%.6g" % sir_limit,
+                       "no non-adjacent self-intersections" if ok
+                       else "self-intersecting triangles detected (ratio=%.6g, pairs=%d)"
+                       % (sir, int(si_info.get("intersecting_pairs", 0))),
+                       "eliminate overlapping/folded geometry or fix boolean/revolve "
+                       "profiles before delivery")
 
     try:
         # -------------------------------------------- dimensional gates
@@ -587,7 +790,7 @@ def verify(mesh: M.Mesh, *, constraints=None, expected_genus=None,
                                   "error",
                                   "bbox %s size in window" % axis,
                                   "bbox %s size outside window" % axis,
-                                  "change the %s dimension; use atta_solve or a "
+                                  "change the %s dimension; use atta_variant or a "
                                   "recipe parameter" % axis)
 
         if "volume_mm3" in cons:
@@ -729,6 +932,14 @@ def verify(mesh: M.Mesh, *, constraints=None, expected_genus=None,
             else:
                 _silhouette_checks(checks, mesh, cons["silhouette_iou"],
                                    quality_sev)
+
+        if "mesh_agreement" in cons:
+            if not gates:
+                _skip(checks, "mesh_agreement", level,
+                      "mesh agreement needs 3D surface sampling and boolean IoU")
+            else:
+                _mesh_agreement_checks(checks, mesh, cons["mesh_agreement"],
+                                       reference_mesh)
 
         # -------------------------------------------- pair gates
         if cons.get("clearance") and not gates:

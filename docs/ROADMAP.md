@@ -8,57 +8,61 @@ is explicitly not, so a reader can tell capability from aspiration.
 
 | Dimension | State | Evidence |
 |---|---|---|
-| Geometry | strong | 23 closed recipes (all pass `verify` at `standard`); 25 feature ops (incl. composable `gyroid`, `sdf` implicit fields, `extrude(holes_xy)`); boolean via manifold3d |
-| Verification | strong | three-state receipt; topology, wall, dihedral, curvature, constraints; coverage-matrix gate |
-| Engineering | medium→strong | bbox/volume/wall/clearance/interference; assembly interference/clearance; no tolerance stack yet |
-| Interoperability | strong (subset) | analytic STEP via build123d/OCCT for box/cylinder/sphere/cone/torus/revolve/extrude/boolean/transform/mirror/pattern; mesh-only ops fail with a fix, never a fake STEP |
-| Agent UX | strong | 10 verbs; MCP/DSH/HTTP; `fix` on every failure; solver and assembly reuse the same verbs |
+| Geometry | strong | 46 closed recipes (all pass `verify` at `standard` across `safe`/`nominal`/`hero`); 56 feature ops (incl. `shape_grammar`, `lsystem`, `hull`, `minkowski`, `polyhedron`, `heightmap`, `deform`, `morph`, `projection_extrude`, composable `gyroid`/`sdf`/`field_tree`, `extrude(holes_xy)`); boolean via manifold3d |
+| Verification | strong | three-state receipt; topology, SIR/DangEL/FluxEE, wall, dihedral, curvature, constraints + `mesh_agreement`; coverage-matrix gate + full preset-matrix CI + parametric `expected_genus` |
+| Engineering | strong | bbox/volume/wall/clearance/interference, 3D Chamfer/Hausdorff/IoU diff, 2D DXF/SVG drawings, `stability` design rule; assembly interference/clearance; no tolerance stack yet |
+| Interoperability | strong (subset) | analytic STEP via build123d/OCCT for box/cylinder/sphere/cone/torus/revolve/extrude(segments)/fillet/chamfer/boolean/transform/mirror/pattern + 2D DXF/SVG drawings; mesh-only ops fail with a fix, never a fake STEP |
+| Agent UX | strong | 12 verbs (`atta_*`); MCP/Antigravity/ZCode/DSH/HTTP; `fix` on every failure; `patch`/`preflight` graph editing; `_clean_args` drop warnings; solver and assembly reuse the same verbs |
 | Spatial sense | strong | text/ASCII perception pack (views/sections/traits/trace/diff), ray grids, clearance, inside/nearest, assembly placements/DOF |
 | Parameter solving | strong | LHS + compass + Nelder-Mead + differential evolution + LM/SLSQP polish; targets, sensitivity, closest-achievable, Pareto; assembly-level `part.param` |
-| Shape range | medium→broad | 23 recipes across 11 of the 12 categories; 6 exact-genus TPMS/fractal cases still fail; fillet is still a Blender bevel, not a kernel op |
+| Shape range | broad | 46 recipes across 11 of the 12 categories (≥3 per targeted category); 12/12 corpus categories above target; v1 100%, v2 98.1%, blind v2_fresh 89.7% verify |
 | Assembly | strong | parts, ports, 13 mate types, SE(3) solve, Jacobian-rank DOF, AABB broadphase, boolean interference, per-part export |
-| Performance | strong for draft | numpy draft: all 23 recipes build in 6.8 s total; `surface.fillet_network` is the outlier at ~4.4 s (SDF-resampled `offset`), everything else ≤0.7 s; resident Blender; render cache |
+| Performance | strong for draft | numpy draft: all 46 recipes build in 6.5 s total; `surface.fillet_network` is the outlier at ~3.8 s (SDF-resampled `offset`), everything else ≤0.35 s; resident Blender; render cache |
 | Visual | strong | per-part PBR materials, studio/catalog/dark/clay presets, focus macro, normal/depth/id/curvature/deviation passes, Zone/CIELAB/colourfulness/key-fill image analysis |
 
-### Shape coverage (v1.2)
+### Shape coverage (v1.2.3)
 
 Twelve categories from [`coverage_matrix.json`](coverage_matrix.json). "corpus" is
 **substantive** records — accepted (`A`/`B` licences) *and* carrying real parameters,
 which is the implementation-grade bar used by the corpus reports;
 reference-only accepted records are not counted toward a target. The family
 column counts shipped recipes; the full
-acceptance evidence (verify verdict + genus + param/constraint counts) is in
-[`SHAPE_COVERAGE.md`](SHAPE_COVERAGE.md).
+acceptance evidence (verify verdict + genus + param/constraint counts + before/after
+bench tables) is in [`SHAPE_COVERAGE.md`](SHAPE_COVERAGE.md).
 
 <!-- SHAPE-COVERAGE-TABLE:START -->
 
-bench (100 held-out cases, generic Spec v3 graph — shipped recipes never called): **faithful build 80.0%**, verify pass 94.0%, build_success 100.0%
+benches (generic Spec v3 feature graph — shipped recipes never called; op coverage 100.0 % across all three):
+- `generalization_v1` (n=100): **faithful 100.0%**, verify 100.0%, build 100.0% (v1.2 was 80.0% / 94.0% / 100.0%)
+- `generalization_v2` (n=160, frozen `432086f` pre-template): **faithful 98.1%**, verify 98.1%, build 100.0% (baseline was 83.8% / 74.4% / 96.2%)
+- `generalization_v2_fresh` (n=116, frozen `8c6f906`, blind single-shot): **faithful 90.5%**, verify 89.7%, build 100.0%
 
-| category | recipes shipped | corpus (substantive / target) | bench verify pass |
+| category | recipes shipped | corpus (substantive / target) | bench verify pass (v1 / v2 / v2_fresh) |
 |---|---|---|---|
-| primitive | 1 — `chamfer_box` | 70 / 30 | 8/8 (8 cases) |
-| mechanical | 4 — `flange`, `gear.involute`, `gear`, `bracket` | 92 / 60 | 16/16 (16 cases) |
-| product | 6 — `enclosure`, `bottle`, `bowl`, `mug`, `screw_cap`, `vase` | 41 / 40 | 11/11 (11 cases) |
-| architecture | 2 — `fluted_column`, `tower.growth` | 20 / 40 ⚠️ | 11/11 (11 cases) |
-| organic | 1 — `seashell` | 13 / 30 ⚠️ | 5/8 (8 cases) |
-| pattern | 1 — `honeycomb_panel` | 46 / 40 | 11/11 (11 cases) |
-| assembly | 1 — `bolt_nut` | 85 / 30 | 8/8 (8 cases) |
-| text | 1 — `engraved_plate` | 9 / 20 ⚠️ | 3/3 (3 cases) |
-| lattice | 1 — `gyroid_slab` | 13 / 20 ⚠️ | 2/5 (5 cases) |
-| surface | 4 — `coons_duct`, `dome`, `fillet_network`, `panel` | 95 / 30 | 10/10 (10 cases) |
-| tolerance | 1 — `clearance_ladder` | 17 / 20 ⚠️ | 6/6 (6 cases) |
-| material_finish | 0 (matrix: target_families 0) | 19 / 10 | 3/3 (3 cases) |
+| primitive | 4 — `chamfer_box`, `rounded_cylinder`, `tube`, `wedge` | 70 / 30 | 8/8 · 13/13 · — |
+| mechanical | 4 — `flange`, `gear.involute`, `gear`, `bracket` | 92 / 60 | 16/16 · 47/47 · — |
+| product | 6 — `enclosure`, `bottle`, `bowl`, `mug`, `screw_cap`, `vase` | 41 / 40 | 11/11 · 17/17 · — |
+| architecture | 5 — `arch_vault`, `dome_oculus`, `fluted_column`, `stair`, `tower.growth` | 50 / 40 | 11/11 · 7/7 · 29/29 |
+| organic | 4 — `coral`, `phyllotaxis`, `seashell`, `tree` | 37 / 30 | 8/8 · 3/3 · 23/24 |
+| pattern | 3 — `honeycomb_panel`, `knurl`, `louvre_panel` | 56 / 40 | 11/11 · 4/4 · 6/10 |
+| assembly | 4 — `bolt_nut`, `clevis_pin`, `dovetail_joint`, `hinge_pin` | 85 / 30 | 8/8 · 9/9 · — |
+| text | 4 — `braille_plate`, `engraved_plate`, `keychain_tag`, `stencil_sign` | 27 / 20 | 3/3 · 2/2 · 16/16 |
+| lattice | 4 — `graded_gyroid`, `gyroid_slab`, `strut_cell`, `tpms_block` | 29 / 20 | 5/5 · 5/6 · 16/16 |
+| surface | 4 — `coons_duct`, `dome`, `fillet_network`, `panel` | 105 / 30 | 10/10 · 42/44 · 9/10 |
+| tolerance | 4 — `clearance_ladder`, `fit_pair_gauge`, `hinge_gauge`, `snap_fit` | 28 / 20 | 6/6 · 4/4 · 5/11 |
+| material_finish | 0 (matrix: target_families 0) | 19 / 10 | 3/3 · 4/4 · — |
 
 <!-- SHAPE-COVERAGE-TABLE:END -->
 
-Short of the corpus target after v1.2: **architecture (20/40), organic (13/30),
-text (9/20), lattice (13/20), tolerance (17/20)** — see the table. `material_finish`
-deliberately has no family — the matrix asks for `target_families: 0` there, only
-examples. The P0 categories carry the most weight and all of them clear their
-corpus targets (mechanical 92/60, product 41/40, pattern 46/40, assembly 85/30,
-surface 95/30) — but as the last column shows, corpus volume and generalisation are
-different things: `lattice` is only 7 short on corpus yet scores **2/5** on bench,
-while `architecture` is 20 short and scores **11/11**.
+All **12/12** corpus categories now clear their substantive targets (`639`
+substantive / `680` accepted / `692` total records across `304` families), and
+all **11/11** targeted recipe categories ship at least 3 recipes passing
+`safe`/`nominal`/`hero` in CI (`tests/test_preset_matrix.py`). `material_finish`
+deliberately has no family (`target_families: 0`). The remaining misses on the
+held-out benches (`3/160` on `v2`, `12/116` on blind `v2_fresh`) are documented
+in [`SHAPE_COVERAGE.md`](SHAPE_COVERAGE.md) — chiefly exact through-hole counts,
+multi-component tolerance gauges, and open-vs-closed sweep loops that cannot be
+inferred from an op list alone.
 
 ### Perception layer (done)
 
@@ -86,12 +90,14 @@ the render round-trip from the shape-iteration loop. `verify` remains the gate.
    "move this variable" recommendations with side effects. Every evaluation is
    a real draft build; constraints use verify semantics.
 
-3. **Feature depth (partly done).**
-   `extrude(holes_xy=...)` cuts real through-holes; `gyroid` and a general
-   `sdf` op (gyroid / Schwarz P / Neovius / Mandelbulb / primitive fields) are
-   composable implicit ops; `offset` and `text_engrave`/`text_emboss` are
-   registered. Still missing: kernel fillet/chamfer, ribs/bosses, shell with
-   openings, and exact reference genus on the remaining TPMS/fractal cases.
+3. **Feature depth (mostly done).**
+   `extrude(holes_xy=...)` cuts real through-holes; `extrude`/`revolve` accept
+   typed 2D `segments` (`line`/`arc`/`tangent_arc`/`circle`); `fillet`/`chamfer`
+   run on the exact OCCT B-rep closure with topological face `tags` and
+   `common_edge_of`/`on_face`/`from_feature` selectors; `gyroid`, `sdf`,
+   `sdf_blend`, `field_tree`, `nurbs_surface`, `shape_grammar`, `lsystem`, and
+   `text_engrave`/`text_emboss` are registered. Still missing: ribs/bosses,
+   shell with openings, and exact reference genus on the remaining TPMS/fractal cases.
 
 ## Phase 3 — precision and scale
 
@@ -102,26 +108,35 @@ the render round-trip from the shape-iteration loop. `verify` remains the gate.
    clipping, contrast, entropy, colourfulness, edge density, key/fill). The
    analysis warns; it never returns a geometry verdict.
 
-5. **B-rep backend behind the same spec (done for a subset).**
-   A graph whose ops are box/cylinder/sphere/cone/torus/revolve/extrude/
-   boolean/transform/mirror/pattern routes to build123d/OCCT and delivers an
-   analytic STEP. Mesh-only ops fail with `brep_unsupported` and a fix; the
-   verdict still comes from the mesh verify receipt. The agent surface is
-   unchanged.
+5. **B-rep & 2D drawing backend behind the same spec (done for a subset).**
+   A graph whose ops map onto build123d/OCCT (`box`, `cylinder`, `sphere`,
+   `cone`, `torus`, `revolve`, `extrude` including `segments` arcs, `fillet`,
+   `chamfer`, booleans, transforms, mirror, patterns) delivers an analytic STEP
+   and OCCT HLR 2D drawings (`dxf`, `svg_drawing`, with pure-numpy `mesh_hlr`
+   fallback). Mesh-only ops fail STEP with `brep_unsupported` and a fix; the
+   verdict still comes from the mesh verify receipt.
 
-6. **Performance.**
+6. **Text-to-CAD verification & editing (done in v1.2.3beta).**
+   3D metrology (`self_intersection` SIR, `dangling_edge_length_mm`,
+   `flux_enclosure_error`), `probe.compare_meshes_3d` (`chamfer_mm`,
+   `hausdorff_p95_mm`, `volumetric_iou`), `constraints.mesh_agreement`,
+   locate-then-infill `patch_spec` / `preflight_spec`, `design.stability`, and
+   L0–L3 prompt-tier evaluation (`corpus/bench/generalization_v3_prompts.json`).
+
+7. **Performance (next).**
    Geometry cache by geometry hash, parallel variants in worker processes,
    optional GPU render, and a warm worker pool. Keep the fast loop under 100 ms
    for typical recipes.
 
 ## Phase 4 — product polish
 
-7. **Materials and finish receipts.** Thumbnails, material previews, and a
+8. **Materials and finish receipts.** Thumbnails, material previews, and a
    finish diff between draft and final.
-8. **Project workspaces.** Per-project `ATTA_HOME`, model listing, cleanup, and
+9. **Project workspaces.** Per-project `ATTA_HOME`, model listing, cleanup, and
    an export bundle with spec + receipt + manifest.
-9. **Host matrix.** Conformance tests that run the same 10-tool script against
-   MCP, DSH plugin, HTTP and a generic OpenAI manifest.
+10. **Host matrix (in progress).** Installers and smoke checks cover Antigravity,
+    ZCode, DSH plugin, Claude/Cursor MCP, and HTTP; add live cross-host
+    conformance tests running the 12-tool script across MCP, DSH, and HTTP.
 
 ## Non-goals
 

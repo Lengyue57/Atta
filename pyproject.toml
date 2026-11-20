@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atta"
-version = "1.2.2b3"
+version = "1.2.3b1"
 description = "LLM-native parametric modeling kernel: spec-driven geometry, measured facts, three-state verification, Blender-backed delivery."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -34,8 +34,9 @@ dependencies = [
 
 [project.optional-dependencies]
 brep = ["build123d>=0.13"]
+drawing = ["ezdxf>=1.0"]
 dev = ["pytest>=7", "jsonschema>=4"]
-all = ["build123d>=0.13", "pytest>=7", "jsonschema>=4"]
+all = ["build123d>=0.13", "ezdxf>=1.0", "pytest>=7", "jsonschema>=4"]
 
 [project.scripts]
 atta = "atta.cli:main"

@@ -137,8 +137,10 @@ def compile_tree(tree, *, scale=1.0, path="tree"):
             "cylinder": {"radius", "height", "center", "axis"},
             "torus": {"major_radius", "minor_radius", "center", "axis"},
             "capsule": {"a", "b", "radius"},
-            "gyroid": {"period", "band", "phase_deg"},
-            "schwarz_p": {"period", "band", "phase_deg"},
+            "gyroid": {"period", "band", "thickness", "phase_deg"},
+            "schwarz_p": {"period", "band", "thickness", "phase_deg"},
+            "diamond": {"period", "band", "thickness", "phase_deg"},
+            "neovius": {"period", "band", "thickness", "phase_deg"},
             "transform": {"child", "translate", "rotate_deg", "scale"},
             "shell": {"child", "thickness"}, "offset": {"child", "distance"},
             "noise": {"child", "amplitude", "wavelength", "seed", "octaves"},
@@ -260,18 +262,44 @@ def compile_tree(tree, *, scale=1.0, path="tree"):
                     q[:, 0], q[:, 1], q[:, 2], octaves=octaves, seed=seed)
             return noisy, cost + 8 * octaves
 
-        if op in ("gyroid", "schwarz_p"):
+        if op in ("gyroid", "schwarz_p", "diamond", "neovius"):
             period = length("period", positive=True)
-            band = num("band", .25, positive=True)
-            phase = np.deg2rad(vec("phase_deg", [0, 0, 0], scaled=False))
+            has_band = "band" in node
+            has_thick = "thickness" in node
+            if has_band and has_thick:
+                _bad("specify either band or thickness, not both", where)
+            phase_deg = vec("phase_deg", [0, 0, 0], scaled=False)
+            phase = np.deg2rad(phase_deg)
             if not np.isfinite(phase).all():
                 _bad("phase is not representable", where + ".phase_deg",
                      "use a finite angle in degrees")
+            if has_thick:
+                thickness = length("thickness", positive=True)
+                if thickness >= 0.5 * period:
+                    _bad("thickness must be < 0.5 * period", where + ".thickness")
+                phase_cells = tuple(float(d) / 360.0 for d in phase_deg)
+
+                def periodic_metric(p):
+                    with np.errstate(under="ignore"):
+                        return sdfkit.tpms_sheet_distance(
+                            op, p[:, 0], p[:, 1], p[:, 2], period, thickness,
+                            phase=phase_cells, newton_steps=3)
+                return periodic_metric, 6
+
+            band = num("band", .25, positive=True)
+
             def periodic(p):
                 q = p * (2 * math.pi / period) + phase
                 sx, sy, sz = np.sin(q).T
                 cx, cy, cz = np.cos(q).T
-                value = sx * cy + sy * cz + sz * cx if op == "gyroid" else cx + cy + cz
+                if op == "gyroid":
+                    value = sx * cy + sy * cz + sz * cx
+                elif op == "schwarz_p":
+                    value = cx + cy + cz
+                elif op == "diamond":
+                    value = sx * sy * sz + sx * cy * cz + cx * sy * cz + cx * cy * sz
+                else:
+                    value = 3.0 * (cx + cy + cz) + 4.0 * cx * cy * cz
                 # band is a dimensionless level-set interval, NOT wall thickness.
                 return (np.abs(value) - band) * period / (2 * math.pi)
             return periodic, 3

@@ -741,5 +741,147 @@ def interference(a: M.Mesh, b: M.Mesh) -> dict:
     }
 
 
+def _sample_surface_area_weighted(mesh: M.Mesh, n_samples: int,
+                                 rng: np.random.Generator) -> np.ndarray:
+    """Area-weighted uniform surface point sampling."""
+    v, f = _arr(mesh)
+    if len(f) == 0 or len(v) == 0:
+        return np.zeros((0, 3), dtype=np.float64)
+    a, b, c = v[f[:, 0]], v[f[:, 1]], v[f[:, 2]]
+    areas = 0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1)
+    total = float(areas.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        return _sample_surface(mesh, n_samples)
+    probs = areas / total
+    cdf = np.cumsum(probs)
+    cdf[-1] = 1.0
+    tri_idx = np.searchsorted(cdf, rng.random(n_samples), side="right")
+    tri_idx = np.clip(tri_idx, 0, len(f) - 1)
+    r1 = np.sqrt(rng.random(n_samples))
+    r2 = rng.random(n_samples)
+    w0 = 1.0 - r1
+    w1 = r1 * (1.0 - r2)
+    w2 = r1 * r2
+    return (w0[:, None] * a[tri_idx] +
+            w1[:, None] * b[tri_idx] +
+            w2[:, None] * c[tri_idx])
+
+
+def _volumetric_iou_voxel(a: M.Mesh, b: M.Mesh, n: int = 20) -> float:
+    """Bounded voxel-grid Volumetric IoU fallback for non-manifold meshes."""
+    ba, bb = M.bbox(a), M.bbox(b)
+    lo = np.minimum(ba["min"], bb["min"])
+    hi = np.maximum(ba["max"], bb["max"])
+    ext = hi - lo
+    if np.any(ext <= 0.0):
+        return 0.0
+    n = max(4, int(n))
+    axes = []
+    max_ext = max(float(ext.max()), 1e-12)
+    for i in range(3):
+        cnt = int(max(4, round(n * float(ext[i]) / max_ext)))
+        step = float(ext[i]) / float(cnt)
+        axes.append(np.linspace(lo[i] + 0.5 * step, hi[i] - 0.5 * step, cnt))
+    grid = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
+    ina = _inside_many(grid, a, n_dirs=1)
+    inb = _inside_many(grid, b, n_dirs=1)
+    union = int(np.count_nonzero(ina | inb))
+    if union == 0:
+        return 0.0
+    inter = int(np.count_nonzero(ina & inb))
+    return float(inter) / float(union)
+
+
+def compare_meshes_3d(ref_mesh: M.Mesh, target_mesh: M.Mesh,
+                      n_samples: int = 4000, seed: int = 0) -> dict:
+    """3D geometric similarity: Chamfer, Hausdorff-95/max, and Volumetric IoU."""
+    n_samples = max(1, int(n_samples))
+    av, af = _arr(ref_mesh)
+    bv, bf = _arr(target_mesh)
+    vol_ref = float(M.volume(ref_mesh)) * 1e9
+    vol_tgt = float(M.volume(target_mesh)) * 1e9
+
+    if len(af) == 0 and len(bf) == 0:
+        return {
+            "chamfer_mm": 0.0,
+            "chamfer_a_to_b_mm": 0.0,
+            "chamfer_b_to_a_mm": 0.0,
+            "hausdorff_p95_mm": 0.0,
+            "hausdorff_max_mm": 0.0,
+            "volumetric_iou": 0.0,
+            "volume_ref_mm3": round(vol_ref, 6),
+            "volume_target_mm3": round(vol_tgt, 6),
+            "n_samples": n_samples,
+            "exact": False,
+        }
+    if len(af) == 0 or len(bf) == 0:
+        return {
+            "chamfer_mm": float("inf"),
+            "chamfer_a_to_b_mm": float("inf"),
+            "chamfer_b_to_a_mm": float("inf"),
+            "hausdorff_p95_mm": float("inf"),
+            "hausdorff_max_mm": float("inf"),
+            "volumetric_iou": 0.0,
+            "volume_ref_mm3": round(vol_ref, 6),
+            "volume_target_mm3": round(vol_tgt, 6),
+            "n_samples": n_samples,
+            "exact": False,
+        }
+
+    rng = np.random.default_rng(int(seed))
+    pa = _sample_surface_area_weighted(ref_mesh, n_samples, rng)
+    pb = _sample_surface_area_weighted(target_mesh, n_samples, rng)
+    kb = len(bf) if len(bf) <= 256 else 24
+    ka = len(af) if len(af) <= 256 else 24
+    d_ab_m, _ = _nearest_to_mesh(pa, bv, bf, k=kb)
+    d_ba_m, _ = _nearest_to_mesh(pb, av, af, k=ka)
+    d_ab = d_ab_m * 1000.0
+    d_ba = d_ba_m * 1000.0
+
+    c_ab = float(d_ab.mean())
+    c_ba = float(d_ba.mean())
+    chamfer = 0.5 * (c_ab + c_ba)
+    h_p95 = max(float(np.percentile(d_ab, 95)), float(np.percentile(d_ba, 95)))
+    h_max = max(float(d_ab.max()), float(d_ba.max()))
+
+    ba, bb = M.bbox(ref_mesh), M.bbox(target_mesh)
+    lo = np.maximum(ba["min"], bb["min"])
+    hi = np.minimum(ba["max"], bb["max"])
+    if np.any(hi <= lo):
+        iou = 0.0
+    else:
+        try:
+            import manifold3d as manifold
+            ma = manifold.Manifold(manifold.Mesh64(
+                vert_properties=av, tri_verts=np.asarray(af, dtype=np.uint64)))
+            mb = manifold.Manifold(manifold.Mesh64(
+                vert_properties=bv, tri_verts=np.asarray(bf, dtype=np.uint64)))
+            if (ma.status() != manifold.Error.NoError
+                    or mb.status() != manifold.Error.NoError):
+                raise ValueError("non-manifold mesh")
+            va_m3 = float(ma.volume())
+            vb_m3 = float(mb.volume())
+            if va_m3 <= 0.0 or vb_m3 <= 0.0:
+                raise ValueError("non-positive manifold volume")
+            inter_v = max(0.0, float((ma ^ mb).volume()))
+            union_v = max(inter_v, float((ma + mb).volume()))
+            iou = float(np.clip(inter_v / union_v, 0.0, 1.0)) if union_v > 0.0 else 0.0
+        except Exception:  # noqa: BLE001 - bounded voxel fallback
+            iou = _volumetric_iou_voxel(ref_mesh, target_mesh)
+
+    return {
+        "chamfer_mm": round(chamfer, 6),
+        "chamfer_a_to_b_mm": round(c_ab, 6),
+        "chamfer_b_to_a_mm": round(c_ba, 6),
+        "hausdorff_p95_mm": round(h_p95, 6),
+        "hausdorff_max_mm": round(h_max, 6),
+        "volumetric_iou": round(float(iou), 6),
+        "volume_ref_mm3": round(vol_ref, 6),
+        "volume_target_mm3": round(vol_tgt, 6),
+        "n_samples": n_samples,
+        "exact": False,
+    }
+
+
 __all__ = ["raycast_grid", "silhouette", "section", "clearance",
-           "interference", "nearest", "inside"]
+           "interference", "nearest", "inside", "compare_meshes_3d"]

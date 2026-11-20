@@ -35,3 +35,7 @@ jobs:
           tests/test_assembly_acceptance.py tests/test_spec_acceptance.py
           tests/test_look_bridge.py
           tests/test_kernel_showcase.py
+          tests/test_3d_metrics.py tests/test_verify_mutation.py
+          tests/test_drawing_dxf.py tests/test_sketch_tags.py
+          tests/test_graph_patch.py tests/test_engine_3d_drawing.py
+          tests/test_docs_sync.py tests/test_install.py

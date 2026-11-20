@@ -1,4 +1,4 @@
-# Atta 1.2.2beta — ZCode plugin
+# Atta 1.2.3beta — ZCode plugin
 
 This is the ZCode-native shell around the `atta` MCP server. It carries:
 
@@ -20,7 +20,7 @@ Then in ZCode:
 
 1. **Plugin Marketplace → Add → Add Plugin Marketplace**
 2. Paste the repo's `plugins/` directory
-3. **Personal → dev-atta-local → Atta 1.2.2beta → Install**
+3. **Personal → dev-atta-local → Atta 1.2.3beta → Install**
 4. Start a new task; the `atta-modeling` skill and `mcp__atta__*` tools are
    available.
 

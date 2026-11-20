@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib.metadata
+import inspect
 import json
 import math
 import os
@@ -45,6 +46,9 @@ _QUALITY_ALIASES = {
     "review": "review", "standard": "review", "med": "review", "medium": "review",
     "deliver": "deliver", "hero": "deliver", "high": "deliver", "final": "deliver",
 }
+
+DRAWING_FORMATS = ("dxf", "svg_drawing")
+EXPORT_FORMATS = ("glb", "obj", "stl", "blend", "step", "dxf", "svg_drawing")
 
 
 # ---------------------------------------------------------------- helpers
@@ -413,18 +417,61 @@ def _build_from_spec(spec: dict, params: dict | None, patches: dict | None,
             details=_jsonable(validated.get("errors")),
         )
     s = validated["spec"]
+    patch_applied: list = []
+    patch_delta: dict | None = None
+    kind = s["model"]["kind"]
     if params or patches:
-        if s["model"]["kind"] != "recipe":
+        if kind == "recipe":
+            if params:
+                merged = dict(s["model"].get("params") or {})
+                merged.update(params)
+                s["model"]["params"] = merged
+            if patches is not None:
+                patched = specmod.patch_spec(s, patches)
+                if not patched.get("ok"):
+                    raise AttaError(
+                        "patch_failed",
+                        "spec patch failed",
+                        path="patches",
+                        fix="fix errors[] in patch result",
+                        details=_jsonable(patched.get("errors")),
+                    )
+                s = patched["spec"]
+                patch_applied = list(patched.get("applied_patches") or [])
+                patch_delta = patched.get("delta")
+        elif kind in ("graph", "assembly"):
+            if params and kind == "assembly" and not patches:
+                raise AttaError(
+                    "patches_not_supported",
+                    "params without patches only apply to recipe or graph specs",
+                    path="params",
+                    fix="use patches={'parts': {part_id: {'params': ...}}} for assemblies",
+                )
+            combined = copy.deepcopy(dict(patches or {}))
+            if params and kind == "graph":
+                merged_p = dict(params)
+                if isinstance(combined.get("params"), Mapping):
+                    merged_p.update(combined["params"])
+                combined["params"] = merged_p
+            patched = specmod.patch_spec(s, combined)
+            if not patched.get("ok"):
+                raise AttaError(
+                    "patch_failed",
+                    "spec patch failed",
+                    path="patches",
+                    fix="fix errors[] in patch result",
+                    details=_jsonable(patched.get("errors")),
+                )
+            s = patched["spec"]
+            patch_applied = list(patched.get("applied_patches") or [])
+            patch_delta = patched.get("delta")
+        else:
             raise AttaError(
                 "patches_not_supported",
-                "params/patches only apply to recipe specs",
+                "patches are not supported for model kind %r" % kind,
                 path="patches",
-                fix="edit graph feature args directly, or use a recipe spec",
+                fix="use recipe, graph, or assembly",
             )
-        merged = dict(s["model"].get("params") or {})
-        merged.update(params or {})
-        merged.update(patches or {})
-        s["model"]["params"] = merged
     if quality:
         s["quality"] = _q(quality)
     if name:
@@ -451,7 +498,11 @@ def _build_from_spec(spec: dict, params: dict | None, patches: dict | None,
                                      material=c["material"])
         s["finish"] = _public_finish(finish_final)
         s["material"] = finish_final.get("material") or c["material"]
-        return _commit_assembly(built, s, name=s["name"], quality=c["quality"])
+        res = _commit_assembly(built, s, name=s["name"], quality=c["quality"])
+        res["applied_patches"] = _jsonable(patch_applied)
+        if patch_delta is not None:
+            res["patch_delta"] = _jsonable(patch_delta)
+        return res
     if c["kind"] == "recipe":
         recipe = recipes.get(c["recipe"])
         resolved = recipe.resolve(patch=c["params_display"], preset=c["preset"])
@@ -468,7 +519,7 @@ def _build_from_spec(spec: dict, params: dict | None, patches: dict | None,
         params_display = c["params_display"]
         recipe_id = recipe.id
         issues = resolved.issues
-        applied = resolved.applied_patches
+        applied = list(patch_applied) + list(resolved.applied_patches or [])
         mat = c["material"]
     else:
         mesh = features.evaluate(
@@ -477,22 +528,25 @@ def _build_from_spec(spec: dict, params: dict | None, patches: dict | None,
         )
         base_finish = {}
         expected = (c.get("constraints") or {}).get("genus")
-        params_display = {}
+        params_display = dict(c.get("params_display") or {})
         recipe_id = None
         issues = []
-        applied = []
+        applied = list(patch_applied)
         mat = c["material"]
 
     finish_final = _apply_finish(base_finish, c.get("finish"), material=mat)
     s["finish"] = _public_finish(finish_final)
     s["material"] = finish_final.get("material") or mat
-    return _commit(
+    res = _commit(
         mesh, s, finish_final,
         name=s["name"], recipe_id=recipe_id, kind=c["kind"],
         quality=c["quality"], params_display=params_display,
         preset=c.get("preset"), expected_genus=expected,
         issues=issues, applied=applied,
     )
+    if patch_delta is not None:
+        res["patch_delta"] = _jsonable(patch_delta)
+    return res
 
 
 # ---------------------------------------------------------------- verbs
@@ -614,7 +668,7 @@ def doctor(deep: bool = False) -> dict:
 
 
 def catalog(verbose: bool = False) -> dict:
-    from .blender import EXPORT_FORMATS, VIEWS
+    from .blender import EXPORT_FORMATS as _BLENDER_EXPORT_FORMATS, VIEWS
     out = {
         "version": _version(),
         "recipes": [r.to_dict(verbose=verbose) for r in recipes.all_recipes()],
@@ -664,7 +718,7 @@ def catalog(verbose: bool = False) -> dict:
                        "sampled clearance"],
         },
         "views": list(VIEWS),
-        "formats": list(EXPORT_FORMATS) + ["step"],
+        "formats": list(dict.fromkeys([*_BLENDER_EXPORT_FORMATS, "step", *DRAWING_FORMATS])),
         "constraints": dict(specmod.CONSTRAINT_DOCS),
         "finish": dict(specmod.FINISH_DOCS),
         "verbs": ["doctor", "catalog", "spec", "model", "variant", "describe",
@@ -686,13 +740,13 @@ def catalog(verbose: bool = False) -> dict:
 
 
 def spec(spec: dict | None = None, op: str = "validate",
-         assume: bool = False) -> dict:
+         assume: bool = False, patches: dict | None = None) -> dict:
     op = str(op or "validate").strip().lower()
     if op == "schema":
         return {"ok": True, "schema": specmod.schema()}
-    if op not in {"validate", "propose", "compile"}:
+    if op not in {"validate", "propose", "compile", "patch", "preflight"}:
         raise AttaError("bad_arguments", "unknown spec op %r" % op, path="op",
-                        fix="use validate | propose | compile | schema")
+                        fix="use validate | propose | compile | patch | preflight | schema")
     if spec is None:
         raise AttaError("bad_arguments", "spec is required for op=%s" % op,
                         path="spec", fix="pass the Spec JSON object")
@@ -715,6 +769,14 @@ def spec(spec: dict | None = None, op: str = "validate",
     if op == "propose":
         out = specmod.propose_spec(spec)
         out["op"] = "propose"
+        return out
+    if op == "patch":
+        out = specmod.patch_spec(spec, patches)
+        out["op"] = "patch"
+        return out
+    if op == "preflight":
+        out = specmod.preflight_spec(spec)
+        out["op"] = "preflight"
         return out
     out = specmod.compile_spec(spec)
     out["op"] = "compile"
@@ -1604,12 +1666,35 @@ def verify(model_id: str | None = None, level: str = "standard",
     cons = dict(rec.get("constraints") or {})
     if constraints:
         cons.update(constraints)
-    receipt = verifymod.verify(
-        ev, constraints=cons,
-        expected_genus=rec.get("expected_genus"),
-        level=level,
-        assumptions=rec.get("assumptions") or [],
-    )
+    reference_mesh = None
+    ref_id = reference
+    ma = cons.get("mesh_agreement")
+    if isinstance(ma, Mapping) and ma.get("target_model_id"):
+        ref_id = str(ma["target_model_id"])
+    if ref_id:
+        _ref_rec, ref_mesh, ref_finish = _load(str(ref_id))
+        reference_mesh, _ = _evaluated(ref_mesh, ref_finish)
+
+    verify_kwargs: dict[str, Any] = {
+        "constraints": cons,
+        "expected_genus": rec.get("expected_genus"),
+        "level": level,
+        "assumptions": rec.get("assumptions") or [],
+    }
+    try:
+        sig = inspect.signature(verifymod.verify)
+        if "reference_mesh" in sig.parameters or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD
+                for p in sig.parameters.values()):
+            verify_kwargs["reference_mesh"] = reference_mesh
+        if (source.get("evaluated") and ev is not mesh
+                and ("kernel_mesh" in sig.parameters or any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD
+                    for p in sig.parameters.values()))):
+            verify_kwargs["kernel_mesh"] = mesh
+    except (TypeError, ValueError):
+        pass
+    receipt = verifymod.verify(ev, **verify_kwargs)
     # verify() only sees the mesh; attach the model identity so the fact card
     # in the receipt reads like the model card, not an anonymous mesh.
     card = dict(receipt.get("facts") or {})
@@ -1955,6 +2040,107 @@ def preview(model_id: str | None = None, views=None, res: int | None = None,
     }
 
 
+def _try_brep_hlr_shape(spec_obj: Any):
+    """Best-effort OCCT B-rep shape for exact HLR; returns None if mesh-only."""
+    if not isinstance(spec_obj, Mapping):
+        return None
+    if (spec_obj.get("model") or {}).get("kind") != "graph":
+        return None
+    try:
+        from . import brep as brepmod
+        if not brepmod.available():
+            return None
+        report = brepmod.build_graph(spec_obj)
+        return report.get("shape")
+    except Exception:  # noqa: BLE001 - mesh-only fallback is expected
+        return None
+
+
+def _export_drawing_files(mesh: Mesh, spec_obj: Any, out: Path, stem: str,
+                          drawing_formats: list[str], *,
+                          try_brep: bool = True) -> tuple[list[dict], bool]:
+    """Export requested 2D CAD drawings (dxf / svg_drawing); returns (files, used_occt)."""
+    if not drawing_formats:
+        return [], False
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    hlr_shape = _try_brep_hlr_shape(spec_obj) if try_brep else None
+    used_occt = hlr_shape is not None
+    dims_mm = [round(float(x) * 1000.0, 3) for x in mesh.bbox()["size"]]
+    out_files: list[dict] = []
+    try:
+        from . import drawing as drawingmod
+    except Exception as exc:  # noqa: BLE001
+        for fmt in drawing_formats:
+            out_files.append(_jsonable({
+                "format": fmt,
+                "ok": False,
+                "backend": "drawing",
+                "error": {
+                    "code": "drawing_unavailable",
+                    "message": "atta.drawing is not available: %s" % exc,
+                    "fix": "Ensure atta/drawing.py and ezdxf are installed.",
+                },
+            }))
+        return out_files, False
+
+    for fmt in drawing_formats:
+        if fmt == "dxf":
+            fpath = out / ("%s.dxf" % stem)
+            try:
+                res = dict(drawingmod.export_dxf(
+                    str(fpath), mesh, shape=hlr_shape, title=stem,
+                ) or {})
+                res.setdefault("format", "dxf")
+                res.setdefault("ok", True)
+                res.setdefault("path", str(fpath))
+                if fpath.exists():
+                    res.setdefault("bytes", int(fpath.stat().st_size))
+                    res["sha256"] = _sha256_file(fpath)
+                res.setdefault("backend", "occt_hlr" if used_occt else "mesh_hlr")
+                out_files.append(_jsonable(res))
+            except AttaError as exc:
+                out_files.append(_jsonable({
+                    "format": "dxf", "ok": False, "path": str(fpath),
+                    "backend": "occt_hlr" if used_occt else "mesh_hlr",
+                    "error": exc.to_dict(),
+                }))
+            except Exception as exc:  # noqa: BLE001
+                out_files.append(_jsonable({
+                    "format": "dxf", "ok": False, "path": str(fpath),
+                    "backend": "occt_hlr" if used_occt else "mesh_hlr",
+                    "error": {"code": "drawing_failed", "message": str(exc)},
+                }))
+        elif fmt == "svg_drawing":
+            fpath = out / ("%s_drawing.svg" % stem)
+            try:
+                res = dict(drawingmod.export_svg(
+                    str(fpath), mesh, shape=hlr_shape, title=stem,
+                    dims_mm=dims_mm,
+                ) or {})
+                res.setdefault("format", "svg_drawing")
+                res.setdefault("ok", True)
+                res.setdefault("path", str(fpath))
+                if fpath.exists():
+                    res.setdefault("bytes", int(fpath.stat().st_size))
+                    res["sha256"] = _sha256_file(fpath)
+                res.setdefault("backend", "occt_hlr" if used_occt else "mesh_hlr")
+                out_files.append(_jsonable(res))
+            except AttaError as exc:
+                out_files.append(_jsonable({
+                    "format": "svg_drawing", "ok": False, "path": str(fpath),
+                    "backend": "occt_hlr" if used_occt else "mesh_hlr",
+                    "error": exc.to_dict(),
+                }))
+            except Exception as exc:  # noqa: BLE001
+                out_files.append(_jsonable({
+                    "format": "svg_drawing", "ok": False, "path": str(fpath),
+                    "backend": "occt_hlr" if used_occt else "mesh_hlr",
+                    "error": {"code": "drawing_failed", "message": str(exc)},
+                }))
+    return out_files, used_occt
+
+
 def _deliver_assembly(rec: dict, formats, outdir, allow_degraded: bool,
                       name: str | None) -> dict:
     t0 = time.perf_counter()
@@ -1976,15 +2162,28 @@ def _deliver_assembly(rec: dict, formats, outdir, allow_degraded: bool,
     if isinstance(wanted, str):
         wanted = [x.strip() for x in wanted.split(",") if x.strip()]
     wanted = [str(x).lower() for x in wanted]
+    drawing_formats = [f for f in wanted if f in DRAWING_FORMATS]
+    scene_formats = [f for f in wanted if f not in DRAWING_FORMATS]
     stem = (name or rec.get("name") or rec["model_id"]).replace("/", "_")
     out = (Path(outdir).expanduser().resolve() if outdir
            else state.out_dir(rec["model_id"], sub="deliver"))
+    out.mkdir(parents=True, exist_ok=True)
     built = assemblymod.build(rec.get("spec") or {},
                               quality=rec.get("quality") or "draft")
-    exported = assemblymod.export_scene(built, formats=wanted, outdir=out,
-                                        stem=stem)
+    exported = (assemblymod.export_scene(built, formats=scene_formats, outdir=out,
+                                         stem=stem)
+                if scene_formats else {"files": [], "errors": []})
     files = [_jsonable(f) for f in exported.get("files") or []]
     errors = [_jsonable(f) for f in exported.get("errors") or []]
+    if drawing_formats:
+        d_files, _ = _export_drawing_files(
+            built["mesh"], rec.get("spec") or {}, out, stem, drawing_formats,
+            try_brep=False,
+        )
+        for df in d_files:
+            files.append(df)
+            if df.get("ok") is False:
+                errors.append(df)
     manifest = {
         "schema": "atta.deliver/v3",
         "created_at": _now(),
@@ -2063,7 +2262,8 @@ def deliver(model_id: str | None = None, formats=None, outdir: str | None = None
         wanted = [x.strip() for x in wanted.split(",") if x.strip()]
     wanted = [str(x).lower() for x in wanted]
     step_wanted = "step" in wanted
-    mesh_formats = [f for f in wanted if f != "step"]
+    drawing_formats = [f for f in wanted if f in DRAWING_FORMATS]
+    mesh_formats = [f for f in wanted if f not in ("step", *DRAWING_FORMATS)]
     stem = (name or rec.get("name") or rec["model_id"]).replace("/", "_")
     # A texture/material override has to reach the exporter, not just the
     # renderer: `finish.material` is a validated preset *name*, so a textured
@@ -2080,6 +2280,7 @@ def deliver(model_id: str | None = None, formats=None, outdir: str | None = None
         elif isinstance(override, str) and override:
             material_spec = {"name": override}
     out = Path(outdir).expanduser().resolve() if outdir else state.out_dir(rec["model_id"], sub="deliver")
+    out.mkdir(parents=True, exist_ok=True)
     ex = {"files": []}
     if mesh_formats:
         try:
@@ -2087,7 +2288,7 @@ def deliver(model_id: str | None = None, formats=None, outdir: str | None = None
             if not blender_available():
                 # Blender is optional (doctor rates it "warn").  A missing
                 # backend must not explode: report which formats still work
-                # and let STEP through, so the user gets a usable file.
+                # and let STEP/drawings through, so the user gets a usable file.
                 ex = {"files": [_jsonable({
                     "format": fmt, "ok": False, "backend": "blender",
                     "error": {
@@ -2095,7 +2296,7 @@ def deliver(model_id: str | None = None, formats=None, outdir: str | None = None
                         "message": "Blender is not installed or not on PATH",
                         "fix": ("install Blender, set ATTA_BLENDER to its "
                                 "executable, or request formats that do not "
-                                "need it: step is available without Blender"),
+                                "need it: step, dxf, svg_drawing are available without Blender"),
                     },
                 }) for fmt in mesh_formats]}
             else:
@@ -2127,7 +2328,21 @@ def deliver(model_id: str | None = None, formats=None, outdir: str | None = None
                 "format": "step", "ok": False, "path": str(step_path),
                 "error": exc.to_dict(),
             }))
+    used_occt_hlr = False
+    if drawing_formats:
+        draw_mesh, _ = _evaluated(mesh, finish)
+        d_files, used_occt_hlr = _export_drawing_files(
+            draw_mesh, rec.get("spec") or {}, out, stem, drawing_formats,
+            try_brep=True,
+        )
+        files.extend(d_files)
     errors = [f for f in files if f.get("ok") is False]
+    if step_wanted or used_occt_hlr:
+        deliver_backend = "brep+mesh"
+    elif drawing_formats and not mesh_formats:
+        deliver_backend = "mesh_hlr"
+    else:
+        deliver_backend = "mesh"
     manifest = {
         "schema": "atta.deliver/v3",
         "created_at": _now(),
@@ -2152,7 +2367,7 @@ def deliver(model_id: str | None = None, formats=None, outdir: str | None = None
         "files": files,
         "errors": errors,
         "exact": False,
-        "backend": "brep+mesh" if step_wanted else "mesh",
+        "backend": deliver_backend,
         "brep": ({k: v for k, v in brep_report.items() if k != "shape"}
                  if brep_report else None),
         "note": ("GLB/OBJ/STL are tessellated derivatives; STEP is an analytic "

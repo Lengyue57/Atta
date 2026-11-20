@@ -1,0 +1,819 @@
+{
+ "bench": "generalization_v3_prompts",
+ "version": "1.2.3beta",
+ "description": "Clean-room Text2CAD-style 4-tier prompt abstraction benchmark for Atta (L0 abstract -> L3 expert). Evaluates reference-free executable geometric predicates and provenance honesty without tautological self-scoring.",
+ "license": "MIT",
+ "tiers": [
+  "L0_abstract",
+  "L1_beginner",
+  "L2_intermediate",
+  "L3_expert"
+ ],
+ "cases": [
+  {
+   "id": "v3_l0_01",
+   "tier": "L0_abstract",
+   "category": "product",
+   "prompt": "a coffee mug",
+   "seed": 0,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_min": 1,
+    "min_wall_mm": 1.0,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l0_02",
+   "tier": "L0_abstract",
+   "category": "mechanical",
+   "prompt": "a mounting flange",
+   "seed": 1,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_min": 2,
+    "aspect_ratio_range": [3.0, 15.0],
+    "aspect_mode": "max_over_min",
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l0_03",
+   "tier": "L0_abstract",
+   "category": "weapon",
+   "prompt": "an ancient sword",
+   "seed": 2,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "aspect_ratio_range": [3.0, 40.0],
+    "aspect_mode": "long_over_mid",
+    "min_symmetric_axes": 1,
+    "readability_min": 0.85,
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l0_04",
+   "tier": "L0_abstract",
+   "category": "product",
+   "prompt": "a flower vase",
+   "seed": 3,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "min_wall_mm": 1.0,
+    "min_symmetric_axes": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l0_05",
+   "tier": "L0_abstract",
+   "category": "mechanical",
+   "prompt": "an L-bracket",
+   "seed": 4,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "min_symmetric_axes": 1,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l0_06",
+   "tier": "L0_abstract",
+   "category": "mechanical",
+   "prompt": "a spur gear",
+   "seed": 5,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_min": 1,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l0_07",
+   "tier": "L0_abstract",
+   "category": "product",
+   "prompt": "an electronics enclosure",
+   "seed": 6,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "min_wall_mm": 1.5,
+    "min_symmetric_axes": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l0_08",
+   "tier": "L0_abstract",
+   "category": "furniture",
+   "prompt": "a dining table",
+   "seed": 7,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "min_symmetric_axes": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l0_09",
+   "tier": "L0_abstract",
+   "category": "product",
+   "prompt": "a desk lamp",
+   "seed": 8,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "min_symmetric_axes": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l0_10",
+   "tier": "L0_abstract",
+   "category": "mechanical",
+   "prompt": "a cooling heatsink",
+   "seed": 9,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "min_symmetric_axes": 1,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l0_11",
+   "tier": "L0_abstract",
+   "category": "unseen",
+   "prompt": "a tapered funnel",
+   "seed": 10,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_min": 1,
+    "min_wall_mm": 0.8,
+    "readability_min": 0.85,
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l0_12",
+   "tier": "L0_abstract",
+   "category": "unseen",
+   "prompt": "a slotted C-clamp",
+   "seed": 11,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_min": 1,
+    "readability_min": 0.85,
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l1_01",
+   "tier": "L1_beginner",
+   "category": "product",
+   "prompt": "a ceramic teacup with a curved side handle and flat bottom",
+   "seed": 0,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_min": 1,
+    "min_wall_mm": 1.0,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "ceramic",
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l1_02",
+   "tier": "L1_beginner",
+   "category": "mechanical",
+   "prompt": "an industrial steel pipe flange with central bore and bolt ring",
+   "seed": 1,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_min": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "steel",
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l1_03",
+   "tier": "L1_beginner",
+   "category": "product",
+   "prompt": "an elegant porcelain vase with a flared lip and stable base",
+   "seed": 2,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "min_wall_mm": 1.0,
+    "min_symmetric_axes": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "porcelain",
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l1_04",
+   "tier": "L1_beginner",
+   "category": "furniture",
+   "prompt": "a sturdy wooden chair with four legs and an upright backrest",
+   "seed": 3,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "min_symmetric_axes": 1,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "wood",
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l1_05",
+   "tier": "L1_beginner",
+   "category": "mechanical",
+   "prompt": "a brutalist aluminum heatsink with parallel cooling fins on a flat base",
+   "seed": 4,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "min_symmetric_axes": 1,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "aluminum",
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l1_06",
+   "tier": "L1_beginner",
+   "category": "product",
+   "prompt": "a wooden mixing bowl with thick walls and a wide circular foot",
+   "seed": 5,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "min_wall_mm": 1.5,
+    "min_symmetric_axes": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "wood",
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l1_07",
+   "tier": "L1_beginner",
+   "category": "product",
+   "prompt": "an ABS plastic project box with open top cavity and vertical walls",
+   "seed": 6,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "min_wall_mm": 1.5,
+    "min_symmetric_axes": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "abs",
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l1_08",
+   "tier": "L1_beginner",
+   "category": "mechanical",
+   "prompt": "a machined brass hollow bushing sleeve with uniform cylindrical wall",
+   "seed": 7,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_min": 1,
+    "min_wall_mm": 1.5,
+    "min_symmetric_axes": 3,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "brass",
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l1_09",
+   "tier": "L1_beginner",
+   "category": "weapon",
+   "prompt": "an ornate fantasy longsword with crossguard, grip, and pommel",
+   "seed": 8,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "aspect_ratio_range": [3.0, 40.0],
+    "aspect_mode": "long_over_mid",
+    "min_symmetric_axes": 1,
+    "readability_min": 0.85,
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l1_10",
+   "tier": "L1_beginner",
+   "category": "vehicle",
+   "prompt": "a futuristic quadcopter drone with central body and four rotor arms",
+   "seed": 9,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "min_symmetric_axes": 2,
+    "readability_min": 0.85,
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l1_11",
+   "tier": "L1_beginner",
+   "category": "product",
+   "prompt": "a glass water bottle with narrow neck and stable base",
+   "seed": 10,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "min_wall_mm": 1.0,
+    "min_symmetric_axes": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "glass",
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l1_12",
+   "tier": "L1_beginner",
+   "category": "unseen",
+   "prompt": "a stainless steel curved pipe elbow with hollow bore",
+   "seed": 11,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_min": 1,
+    "min_wall_mm": 1.5,
+    "readability_min": 0.85,
+    "expected_material": "stainless",
+    "expected_provenance_size": "invented"
+   }
+  },
+  {
+   "id": "v3_l2_01",
+   "tier": "L2_intermediate",
+   "category": "mechanical",
+   "prompt": "a steel mounting flange around 160 mm diameter with 8 bolt holes",
+   "seed": 0,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_exact": 9,
+    "bbox_check": {"mode": "max_xy_range", "min": 130, "max": 190},
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "steel",
+    "expected_provenance_size": "derived"
+   }
+  },
+  {
+   "id": "v3_l2_02",
+   "tier": "L2_intermediate",
+   "category": "mechanical",
+   "prompt": "a brass spur gear around 110 mm diameter with 20 teeth and central bore",
+   "seed": 1,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_exact": 1,
+    "bbox_check": {"mode": "max_xy_range", "min": 90, "max": 130},
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "brass",
+    "expected_provenance_size": "derived"
+   }
+  },
+  {
+   "id": "v3_l2_03",
+   "tier": "L2_intermediate",
+   "category": "product",
+   "prompt": "a ceramic coffee mug roughly 105 mm tall with a side handle",
+   "seed": 2,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_min": 1,
+    "min_wall_mm": 1.5,
+    "bbox_check": {"mode": "z_range", "min": 80, "max": 135},
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "ceramic",
+    "expected_provenance_size": "derived"
+   }
+  },
+  {
+   "id": "v3_l2_04",
+   "tier": "L2_intermediate",
+   "category": "mechanical",
+   "prompt": "an aluminum heatsink roughly 100 mm long with 2:1 aspect ratio and 9 cooling fins",
+   "seed": 3,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "bbox_check": {"mode": "sorted_aspect_min", "min": 1.65},
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "aluminum",
+    "expected_provenance_size": "derived"
+   }
+  },
+  {
+   "id": "v3_l2_05",
+   "tier": "L2_intermediate",
+   "category": "product",
+   "prompt": "a nylon electronics enclosure around 110 mm wide, under 150 mm, wall thickness 3 mm",
+   "seed": 4,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "min_wall_mm": 2.5,
+    "bbox_check": {"mode": "max_dim_le", "max": 155},
+    "min_symmetric_axes": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "nylon",
+    "expected_provenance_size": "derived"
+   }
+  },
+  {
+   "id": "v3_l2_06",
+   "tier": "L2_intermediate",
+   "category": "product",
+   "prompt": "a porcelain flower vase roughly 240 mm tall with radial symmetry",
+   "seed": 5,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "min_wall_mm": 1.5,
+    "bbox_check": {"mode": "z_range", "min": 180, "max": 300},
+    "min_symmetric_axes": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "porcelain",
+    "expected_provenance_size": "derived"
+   }
+  },
+  {
+   "id": "v3_l2_07",
+   "tier": "L2_intermediate",
+   "category": "mechanical",
+   "prompt": "an aluminum L-bracket roughly 90 mm long with 3 mounting holes",
+   "seed": 6,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_exact": 3,
+    "min_symmetric_axes": 1,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "aluminum",
+    "expected_provenance_size": "derived"
+   }
+  },
+  {
+   "id": "v3_l2_08",
+   "tier": "L2_intermediate",
+   "category": "mechanical",
+   "prompt": "a stainless steel pipe sleeve around 65 mm diameter with wall thickness 5 mm",
+   "seed": 7,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_exact": 1,
+    "min_wall_mm": 4.5,
+    "min_symmetric_axes": 3,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "stainless",
+    "expected_provenance_size": "derived"
+   }
+  },
+  {
+   "id": "v3_l2_09",
+   "tier": "L2_intermediate",
+   "category": "product",
+   "prompt": "a wooden salad bowl around 220 mm diameter with flat stable base",
+   "seed": 8,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "min_wall_mm": 2.0,
+    "bbox_check": {"mode": "max_xy_range", "min": 175, "max": 265},
+    "min_symmetric_axes": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "wood",
+    "expected_provenance_size": "derived"
+   }
+  },
+  {
+   "id": "v3_l2_10",
+   "tier": "L2_intermediate",
+   "category": "product",
+   "prompt": "a sleek desk lamp roughly 360 mm tall with round base and shade",
+   "seed": 9,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "bbox_check": {"mode": "z_range", "min": 280, "max": 440},
+    "min_symmetric_axes": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_provenance_size": "derived"
+   }
+  },
+  {
+   "id": "v3_l2_11",
+   "tier": "L2_intermediate",
+   "category": "architecture",
+   "prompt": "a classical fluted column roughly 2400 mm tall with base and capital",
+   "seed": 10,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "min_symmetric_axes": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_provenance_size": "derived"
+   }
+  },
+  {
+   "id": "v3_l2_12",
+   "tier": "L2_intermediate",
+   "category": "unseen",
+   "prompt": "a brass stepped shaft spacer around 50 mm diameter with 2 concentric bores",
+   "seed": 11,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_min": 1,
+    "min_wall_mm": 2.0,
+    "expected_material": "brass",
+    "expected_provenance_size": "derived"
+   }
+  },
+  {
+   "id": "v3_l3_01",
+   "tier": "L3_expert",
+   "category": "product",
+   "prompt": "a ceramic coffee mug, 115 x 85 x 95 mm, wall thickness 4 mm, bilateral symmetry, stable upright flat base",
+   "seed": 0,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_exact": 1,
+    "min_wall_mm": 3.5,
+    "max_wall_mm": 5.0,
+    "bbox_check": {"mode": "sorted_xyz", "target_mm": [115, 95, 85], "tol_pct": 5.0},
+    "min_symmetric_axes": 1,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "ceramic",
+    "expected_provenance_size": "measured"
+   }
+  },
+  {
+   "id": "v3_l3_02",
+   "tier": "L3_expert",
+   "category": "mechanical",
+   "prompt": "a stainless steel mounting flange, OD 160 mm, height 20 mm, 8 bolt holes, stable flat base",
+   "seed": 1,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_exact": 9,
+    "bbox_check": {"mode": "sorted_xyz", "target_mm": [160, 160, 20], "tol_pct": 5.0},
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "stainless",
+    "expected_provenance_size": "measured"
+   }
+  },
+  {
+   "id": "v3_l3_03",
+   "tier": "L3_expert",
+   "category": "product",
+   "prompt": "an ABS electronics enclosure, 140 x 100 x 55 mm, wall thickness 3.5 mm, symmetric open top, stable flat base",
+   "seed": 2,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_exact": 0,
+    "min_wall_mm": 3.2,
+    "max_wall_mm": 4.2,
+    "bbox_check": {"mode": "sorted_xyz", "target_mm": [140, 100, 55], "tol_pct": 5.0},
+    "min_symmetric_axes": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "abs",
+    "expected_provenance_size": "measured"
+   }
+  },
+  {
+   "id": "v3_l3_04",
+   "tier": "L3_expert",
+   "category": "mechanical",
+   "prompt": "an aluminum L-bracket, length 90 mm, width 60 mm, height 75 mm, wall thickness 8 mm, 2 holes, upright stable",
+   "seed": 3,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_exact": 2,
+    "min_wall_mm": 7.0,
+    "bbox_check": {"mode": "sorted_xyz", "target_mm": [90, 75, 60], "tol_pct": 5.0},
+    "min_symmetric_axes": 1,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "aluminum",
+    "expected_provenance_size": "measured"
+   }
+  },
+  {
+   "id": "v3_l3_05",
+   "tier": "L3_expert",
+   "category": "mechanical",
+   "prompt": "a brass spur gear, OD 100 mm, thickness 18 mm, 20 teeth, central bore, flat stable",
+   "seed": 4,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_exact": 1,
+    "bbox_check": {"mode": "sorted_xyz", "target_mm": [100, 100, 18], "tol_pct": 5.0},
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "brass",
+    "expected_provenance_size": "measured"
+   }
+  },
+  {
+   "id": "v3_l3_06",
+   "tier": "L3_expert",
+   "category": "mechanical",
+   "prompt": "a steel pipe sleeve, OD 60 mm, height 90 mm, wall thickness 6 mm, symmetric, stable upright",
+   "seed": 5,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_exact": 1,
+    "min_wall_mm": 5.5,
+    "bbox_check": {"mode": "sorted_xyz", "target_mm": [90, 60, 60], "tol_pct": 5.0},
+    "min_symmetric_axes": 3,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "steel",
+    "expected_provenance_size": "measured"
+   }
+  },
+  {
+   "id": "v3_l3_07",
+   "tier": "L3_expert",
+   "category": "product",
+   "prompt": "a porcelain flower vase, OD 120 mm, height 220 mm, wall thickness 4 mm, symmetric, stable base",
+   "seed": 6,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_exact": 0,
+    "min_wall_mm": 3.5,
+    "bbox_check": {"mode": "sorted_xyz", "target_mm": [220, 120, 120], "tol_pct": 5.0},
+    "min_symmetric_axes": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "porcelain",
+    "expected_provenance_size": "measured"
+   }
+  },
+  {
+   "id": "v3_l3_08",
+   "tier": "L3_expert",
+   "category": "mechanical",
+   "prompt": "an aluminum heatsink, 100 x 80 x 35 mm, 7 cooling fins, symmetric, stable flat base",
+   "seed": 7,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_exact": 0,
+    "bbox_check": {"mode": "sorted_xyz", "target_mm": [100, 80, 35], "tol_pct": 5.0},
+    "min_symmetric_axes": 1,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "aluminum",
+    "expected_provenance_size": "measured"
+   }
+  },
+  {
+   "id": "v3_l3_09",
+   "tier": "L3_expert",
+   "category": "product",
+   "prompt": "a wooden mixing bowl, OD 200 mm, height 80 mm, wall thickness 5 mm, symmetric, stable flat foot",
+   "seed": 8,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_exact": 0,
+    "min_wall_mm": 4.0,
+    "bbox_check": {"mode": "sorted_xyz", "target_mm": [200, 200, 80], "tol_pct": 5.0},
+    "min_symmetric_axes": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "wood",
+    "expected_provenance_size": "measured"
+   }
+  },
+  {
+   "id": "v3_l3_10",
+   "tier": "L3_expert",
+   "category": "product",
+   "prompt": "a glass bottle, OD 75 mm, height 230 mm, wall thickness 3 mm, symmetric, stable upright",
+   "seed": 9,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_exact": 0,
+    "min_wall_mm": 2.5,
+    "bbox_check": {"mode": "sorted_xyz", "target_mm": [230, 75, 75], "tol_pct": 5.0},
+    "min_symmetric_axes": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "glass",
+    "expected_provenance_size": "measured"
+   }
+  },
+  {
+   "id": "v3_l3_11",
+   "tier": "L3_expert",
+   "category": "product",
+   "prompt": "a brushed steel desk lamp, OD 160 mm, height 300 mm, symmetric, stable flat base",
+   "seed": 10,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_exact": 0,
+    "bbox_check": {"mode": "sorted_xyz", "target_mm": [300, 160, 160], "tol_pct": 5.0},
+    "min_symmetric_axes": 2,
+    "stability_required": true,
+    "readability_min": 0.85,
+    "expected_material": "brushed_steel",
+    "expected_provenance_size": "measured"
+   }
+  },
+  {
+   "id": "v3_l3_12",
+   "tier": "L3_expert",
+   "category": "unseen",
+   "prompt": "a machined steel perforated corner gusset, 120 x 90 x 12 mm, 4 mounting holes, stable base",
+   "seed": 11,
+   "predicates": {
+    "closed": true,
+    "n_components": 1,
+    "genus_exact": 4,
+    "bbox_check": {"mode": "sorted_xyz", "target_mm": [120, 90, 12], "tol_pct": 5.0},
+    "expected_material": "steel",
+    "expected_provenance_size": "measured"
+   }
+  }
+ ]
+}

@@ -29,7 +29,7 @@ from atta.agent import tools
 #: letting the payload silently double.
 CATALOG_MAX_BYTES = 12000
 #: Total recipes in the shipped catalogue (used to prove paging is lossless).
-EXPECTED_RECIPES = 23
+EXPECTED_RECIPES = 46
 
 
 def _size(value) -> int:
@@ -161,7 +161,8 @@ def test_catalog_feature_lookup_is_tiny_and_specific(home):
     assert out["ok"] is True, out
     assert _size(out) < 2000
     schema = out["data"]["schema"]
-    assert "profile_rz" in schema["required"]
+    assert "profile_rz" in (set(schema["required"]) | set(schema["optional"]))
+    assert "segments" in schema["optional"]
 
 
 def test_catalog_unknown_feature_is_actionable(home):

@@ -81,28 +81,53 @@ DEFAULT_N = 100
 MAX_VARIANT_FRACTION = 0.30
 
 # ---------------------------------------------------------------- op model
-#: Ops Atta exposes as first-class feature ops (read live from the registry at
-#: run time; this is the documentation copy used by ``--regenerate``).
+#: Corpus vocabulary tokens mapped to registered first-class feature ops
+#: (verified live against ``atta.features.FEATURE_OPS``).
+NATIVE_OP_ALIASES = {
+    "hull": "hull",
+    "minkowski": "minkowski",
+    "polyhedron": "polyhedron",
+    "heightmap": "heightmap",
+    "surface": "heightmap",
+    "deform": "deform",
+    "morph": "morph",
+    "projection": "projection_extrude",
+    "projection_extrude": "projection_extrude",
+    "offset": "offset",
+    "subdiv": "subdivide",
+    "subdivide": "subdivide",
+    "smooth": "repair",
+    "remesh": "repair",
+    "libfive_tree": "field_tree",
+    "field_tree": "field_tree",
+    "rule": "shape_grammar",
+    "startshape": "shape_grammar",
+    "cf::symmetry": "shape_grammar",
+    "shape_grammar": "shape_grammar",
+    "lsystem": "lsystem",
+}
+#: Ops Atta exposes as first-class feature ops (direct names + documented
+#: corpus-vocabulary aliases backed by live registered ops in NATIVE_OP_ALIASES).
 NATIVE_OPS = {
     "box", "cylinder", "sphere", "cone", "torus", "revolve", "loft", "sweep",
     "coons", "gordon", "extrude", "thicken", "lobes", "union", "difference",
     "intersection", "mirror", "pattern_linear", "pattern_polar", "transform",
     "text_engrave", "text_emboss", "sdf", "gyroid",
-}
+} | set(NATIVE_OP_ALIASES)
 #: Ops with no dedicated feature op but a documented composition over the ops
 #: above.  Each entry states HOW, because "constructible" has to be auditable.
 CONSTRUCTIBLE_OPS = {
     "hole": "cylinder subtraction",
     "shell": "difference of two revolves / an offset inner body",
-    "chamfer": "difference of rotated cutter prisms (see primitive.chamfer_box)",
-    "fillet": "difference of 'chamfer prism minus cylinder' cutters",
+    "chamfer": "difference of rotated cutter prisms (and exact BREP chamfer op)",
+    "fillet": "difference of 'chamfer prism minus cylinder' cutters (and exact BREP fillet op)",
     "knurl": "pattern_polar of a cutter, subtracted",
     "emboss": "union of a raised body (text_emboss exists)",
     "engrave": "difference of a text cutter (text_engrave exists)",
     "text": "text_engrave / text_emboss op",
     "pocket": "box subtraction",
-    "bend": "loft between rotated sections",
-    "twist": "loft/sweep with twist_deg",
+    "bend": "deform(mode='bend') / loft between rotated sections",
+    "twist": "deform(mode='twist') / loft/sweep with twist_deg",
     "teeth": "extrude of a sampled profile loop",
     "lattice": "sdf(op) / gyroid(op) implicit field",
     "lipschitz": "sdf() calibrates the field gradient to a metric distance",
@@ -112,23 +137,7 @@ CONSTRUCTIBLE_OPS = {
 #: vocabulary*: op_coverage is measured only over declared ops in this set, so a
 #: record cannot inflate or deflate the metric with renderer tokens.  Everything
 #: outside the vocabulary is reported separately as ``ops_ignored``.
-MISSING_OPS = {
-    "hull": "Minkowski/hull of arbitrary solids is not in the op set",
-    "minkowski": "same",
-    "projection": "no 3D->2D projection op",
-    "polyhedron": "no arbitrary vertex/face solid op",
-    "offset": "surface offset (only 'thicken' for shells)",
-    "smooth": "no smoothing/subdivision op",
-    "morph": "no shape interpolation op",
-    "surface": "no heightmap op",
-    "deform": "no free-form deformation op",
-    "subdiv": "no subdivision op",
-    "remesh": "no remeshing op",
-    "rule": "grammar/L-system rule (Structure Synth, CFDG, L-systems)",
-    "startshape": "grammar/L-system entry rule",
-    "cf::symmetry": "grammar symmetry directive (CFDG)",
-    "libfive_tree": "implicit/SDF expression tree",
-}
+MISSING_OPS = {}
 
 #: Curated geometric vocabulary used as the op_coverage denominator.
 GEOMETRIC_VOCAB = set(NATIVE_OPS) | set(CONSTRUCTIBLE_OPS) | set(MISSING_OPS)
@@ -358,12 +367,21 @@ def _ngon(r, n, cx=0.0, cy=0.0):
 
 
 def t_box_csg(d, opts=None):
-    """box, optionally minus a through bore when the source has a hole."""
+    """box, optionally minus a bore (blind or through) when the source has a hole."""
+    opts = opts or {}
     L, W, H = d["L"], d["W"], d["H"]
     feats = [{"id": "base", "op": "box", "args": {"size": [L, W, H]}}]
-    if not (opts or {}).get("holes", False):
+    if not opts.get("holes", False):
         return _spec("box_csg", feats)
     r = min(d.get("R") or 0.18 * min(L, W), 0.45 * min(L, W))
+    if opts.get("blind_hole", False):
+        # A blind hole cuts from the top face without piercing the base (genus 0).
+        feats += [
+            {"id": "bore", "op": "cylinder",
+             "args": {"radius": r, "height": H * 0.8, "center": [0, 0, 0.35 * H]}},
+            {"id": "out", "op": "difference", "args": {}, "inputs": ["base", "bore"]},
+        ]
+        return _spec("box_csg", feats)
     feats += [
         {"id": "bore", "op": "cylinder",
          "args": {"radius": r, "height": H * 2.0, "center": [0, 0, 0]}},
@@ -531,17 +549,19 @@ def t_sphere_cone_csg(d, opts=None):
 
     A through bore is part of the source's construction, not a default.  The
     earlier unconditional bore made the template invent genus-1 topology for
-    genus-0 records.
+    genus-0 records.  Sphere uses 36 segments (vs cone's 48) so coaxial
+    meridians do not collide coplanarly and leave zero-area slivers.
     """
     R, H = d["R"], d["H"]
     body = [
-        {"id": "s", "op": "sphere", "args": {"radius": R, "center": [0, 0, R]}},
+        {"id": "s", "op": "sphere",
+         "args": {"radius": R, "center": [0, 0, 0.7 * R], "segments": 36}},
         {"id": "c", "op": "cone",
-         "args": {"r_bottom": R, "r_top": 0.2 * R, "height": H,
-                  "center": [0, 0, H / 2.0]}},
+         "args": {"r_bottom": R, "r_top": 0.25 * R, "height": H,
+                  "center": [0, 0, H / 2.0], "segments": 47}},
         {"id": "body", "op": "union", "args": {}, "inputs": ["s", "c"]},
     ]
-    if not (opts or {}).get("holes", False):
+    if not (opts or {}).get("holes", False) or (opts or {}).get("blind_hole", False):
         return _spec("sphere_cone_csg", body)
     # Long enough to exit both the sphere (top 2R) and the cone (top H).
     top = max(2.0 * R, H)
@@ -577,9 +597,9 @@ def t_gyroid_slab(d, opts=None):
     opts = opts or {}
     params = opts.get("params") or {}
     field = str(opts.get("field") or "gyroid")
-    L = max(12.0, d.get("L") or 40.0)
-    W = max(12.0, d.get("W") or 30.0)
-    H = max(8.0, d.get("H") or 20.0)
+    L = max(6.0, d.get("L") or 40.0)
+    W = max(6.0, d.get("W") or 30.0)
+    H = max(4.0, d.get("H") or 20.0)
     period = params.get("period") or params.get("cell_size") or params.get("scale_x")
     thickness = params.get("thickness") or params.get("shell")
     clip_radius = params.get("clip_radius")
@@ -609,9 +629,9 @@ def t_sdf_field(d, opts=None):
     opts = opts or {}
     params = opts.get("params") or {}
     field = str(opts.get("field") or "gyroid")
-    L = max(12.0, d.get("L") or 40.0)
-    W = max(12.0, d.get("W") or 30.0)
-    H = max(8.0, d.get("H") or 20.0)
+    L = max(6.0, d.get("L") or 40.0)
+    W = max(6.0, d.get("W") or 30.0)
+    H = max(4.0, d.get("H") or 20.0)
     args = {"size": [L, W, H], "field": field, "resolution": 12}
     period = params.get("period") or params.get("cell_size") or params.get("scale_x")
     thickness = params.get("thickness") or params.get("shell")
@@ -627,22 +647,338 @@ def t_sdf_field(d, opts=None):
 
 def t_text_plate(d, opts=None):
     """Plate plus single-stroke text (engraved or embossed) on its top face."""
-    L = max(20.0, d.get("L") or 60.0)
-    W = max(12.0, d.get("W") or 30.0)
+    L = max(2.0, d.get("L") or 60.0)
+    W = max(1.0, d.get("W") or 30.0)
     T = max(1.0, d.get("T") or 4.0)
     text = str((opts or {}).get("text") or "ATTA")
-    cap = min(0.42 * W, max(4.0, 0.55 * L / max(2, len(text))))
-    depth = max(0.6, min(1.2, 0.4 * T))
-    stroke = max(0.7, 0.09 * cap)
+    cap = min(0.45 * W, max(0.3, 0.55 * L / max(2, len(text))))
+    depth = max(0.2, min(1.2, 0.4 * T))
+    stroke = max(0.08, 0.12 * cap)
     return _spec("text_plate", [
         {"id": "plate", "op": "box",
          "args": {"size": [L, W, T], "center": [0, 0, T / 2.0]}},
         {"id": "txt", "op": "text_emboss",
          "args": {"text": text, "height": cap, "depth": depth,
-                  "stroke_width": stroke, "at": [0, 0], "align": "center"}},
+                  "stroke_width": stroke, "align": "center"}},
         {"id": "lift", "op": "transform",
          "args": {"translate": [0, 0, T]}, "inputs": ["txt"]},
         {"id": "out", "op": "union", "args": {}, "inputs": ["plate", "lift"]},
+    ])
+
+
+def t_shape_grammar(d, opts=None):
+    """Declarative shape grammar (CFDG / Structure Synth) with optional symmetry."""
+    opts = opts or {}
+    ref = opts.get("ref_ops") or set()
+    params = opts.get("params") or {}
+    L, W, H = max(6.0, d["L"]), max(6.0, d["W"]), max(4.0, d["H"])
+    unit = max(2.0, min(L, W, H) / 4.0)
+    depth = 4
+    for key in ("max_depth", "maxdepth", "depth", "levels", "iterations"):
+        val = params.get(key)
+        if val is not None and val >= 1:
+            depth = max(2, min(6, int(round(val))))
+            break
+    args = {
+        "startshape": "ROOT",
+        "unit": unit,
+        "max_components": 1,
+        "depth_policy": "prune",
+    }
+    if "cf::symmetry" in ref:
+        order = 6
+        for key in ("order", "symmetry", "folds", "n", "arms", "petals", "count"):
+            val = params.get(key)
+            if val is not None and val >= 2:
+                order = max(2, min(13, int(round(val))))
+                break
+        sym_kind = "CF::Dihedral" if (ref & {"mirror", "flip"}) else "CF::Cyclic"
+        args["symmetry"] = "%s, %d" % (sym_kind, order)
+        args["rules"] = {
+            "ROOT": [
+                {"shape": "cylinder", "transform": {"s": [2.2, 2.2, 0.7]}},
+                {"call": "ARM", "transform": {"x": 0.9}},
+            ],
+            "ARM": [{"weight": 1.0, "max_depth": depth, "body": [
+                {"shape": "box", "transform": {"s": [1.0, 0.25, 0.45]}},
+                {"call": "ARM", "transform": {"x": 0.75, "s": 0.85}},
+            ]}],
+        }
+    elif "pattern_polar" in ref:
+        args["symmetry"] = "CF::Cyclic, 6"
+        args["rules"] = {
+            "ROOT": [
+                {"shape": "cylinder", "transform": {"s": [2.0, 2.0, 0.7]}},
+                {"call": "ARM", "transform": {"x": 0.85}},
+            ],
+            "ARM": [{"weight": 1.0, "max_depth": depth, "body": [
+                {"shape": "box", "transform": {"s": [1.0, 0.28, 0.45]}},
+                {"call": "ARM", "transform": {"x": 0.75, "s": 0.85}},
+            ]}],
+        }
+    else:
+        args["rules"] = {
+            "ROOT": [{"weight": 1.0, "max_depth": depth + 1, "body": [
+                {"shape": "box", "transform": {"s": [1.2, 1.2, 0.9]}},
+                {"call": "ROOT", "transform": {"z": 0.75, "r": 12.0, "s": 0.88}},
+            ]}],
+        }
+    return _spec("shape_grammar", [{"id": "out", "op": "shape_grammar", "args": args}])
+
+
+def t_lsystem_tree(d, opts=None):
+    """3D turtle L-system branching solid."""
+    opts = opts or {}
+    params = opts.get("params") or {}
+    L, W, H = max(8.0, d["L"]), max(8.0, d["W"]), max(8.0, d["H"])
+    iters = 2
+    for key in ("iterations", "depth", "levels", "order"):
+        val = params.get(key)
+        if val is not None and val >= 1:
+            iters = max(1, min(3, int(round(val))))
+            break
+    angle = float(params.get("angle") or params.get("turn_angle") or 28.0)
+    angle = max(10.0, min(60.0, angle))
+    step = max(4.0, min(20.0, H / 4.0))
+    width = max(1.0, min(step * 0.4, min(L, W) / 10.0))
+    return _spec("lsystem_tree", [{
+        "id": "out", "op": "lsystem",
+        "args": {
+            "axiom": "F[+F][-F][&F][^F]",
+            "rules": {"F": 'F"![+F][-F]'},
+            "iterations": iters, "angle": angle,
+            "step": step, "width": width,
+            "joints": True, "max_components": 1,
+        },
+    }])
+
+
+def t_hull_solid(d, opts=None):
+    """Convex hull over two offset solids (plus optional bore)."""
+    opts = opts or {}
+    L, W, H = max(2.0, d["L"]), max(2.0, d["W"]), max(2.0, d["H"])
+    feats = [
+        {"id": "a", "op": "box",
+         "args": {"size": [L, W, 0.5 * H], "center": [0, 0, -0.25 * H]}},
+        {"id": "b", "op": "box",
+         "args": {"size": [0.6 * L, 0.6 * W, 0.5 * H], "center": [0, 0, 0.25 * H]}},
+        {"id": "body", "op": "hull", "args": {}, "inputs": ["a", "b"]},
+    ]
+    if not opts.get("holes", False) or opts.get("blind_hole", False):
+        return _spec("hull_solid", feats)
+    r = min(d.get("R") or 0.16 * min(L, W), 0.25 * min(L, W))
+    feats += [
+        {"id": "bore", "op": "cylinder",
+         "args": {"radius": max(0.4, r), "height": H * 2.0, "center": [0, 0, 0]}},
+        {"id": "out", "op": "difference", "args": {}, "inputs": ["body", "bore"]},
+    ]
+    return _spec("hull_solid", feats)
+
+
+def t_minkowski_solid(d, opts=None):
+    """Minkowski sum of a core prism and a rounding ball (exact convex+convex)."""
+    opts = opts or {}
+    L, W, H = max(3.0, d["L"]), max(3.0, d["W"]), max(3.0, d["H"])
+    r = max(0.4, min(0.15 * min(L, W, H), 4.0))
+    feats = [
+        {"id": "core", "op": "box",
+         "args": {"size": [L - 2.0 * r, W - 2.0 * r, H - 2.0 * r]}},
+        {"id": "ball", "op": "sphere", "args": {"radius": r, "segments": 12}},
+        {"id": "body", "op": "minkowski", "args": {}, "inputs": ["core", "ball"]},
+    ]
+    if not opts.get("holes", False) or opts.get("blind_hole", False):
+        return _spec("minkowski_solid", feats)
+    rb = min(d.get("R") or 0.18 * min(L, W), 0.35 * min(L, W))
+    feats += [
+        {"id": "bore", "op": "cylinder",
+         "args": {"radius": max(0.4, rb), "height": H * 2.0, "center": [0, 0, 0]}},
+        {"id": "out", "op": "difference", "args": {}, "inputs": ["body", "bore"]},
+    ]
+    return _spec("minkowski_solid", feats)
+
+
+def t_polyhedron_solid(d, opts=None):
+    """Explicit faceted closed polyhedron (tapered octagonal prism, n-gon caps)."""
+    opts = opts or {}
+    L, W, H = max(2.0, d["L"]), max(2.0, d["W"]), max(2.0, d["H"])
+    cx, cy = 0.2929 * L, 0.2929 * W
+    hx, hy, hz = L / 2.0, W / 2.0, H / 2.0
+    bot = [
+        [-hx + cx, -hy, -hz], [hx - cx, -hy, -hz],
+        [hx, -hy + cy, -hz], [hx, hy - cy, -hz],
+        [hx - cx, hy, -hz], [-hx + cx, hy, -hz],
+        [-hx, hy - cy, -hz], [-hx, -hy + cy, -hz],
+    ]
+    top = [[p[0] * 0.78, p[1] * 0.78, hz] for p in bot]
+    pts = bot + top
+    faces = [list(range(7, -1, -1)), list(range(8, 16))]
+    for i in range(8):
+        j = (i + 1) % 8
+        faces.append([i, j, 8 + j, 8 + i])
+    feats = [{"id": "body", "op": "polyhedron",
+              "args": {"points": pts, "faces": faces}}]
+    if not opts.get("holes", False) or opts.get("blind_hole", False):
+        return _spec("polyhedron_solid", feats)
+    r = min(d.get("R") or 0.18 * min(L, W), 0.32 * min(L, W))
+    feats += [
+        {"id": "bore", "op": "cylinder",
+         "args": {"radius": max(0.4, r), "height": H * 2.0, "center": [0, 0, 0]}},
+        {"id": "out", "op": "difference", "args": {}, "inputs": ["body", "bore"]},
+    ]
+    return _spec("polyhedron_solid", feats)
+
+
+def t_heightmap_solid(d, opts=None):  # noqa: ARG001
+    """Closed heightfield solid via OpenSCAD surface()-equivalent ``heightmap``."""
+    L, W, H = max(2.0, d["L"]), max(2.0, d["W"]), max(1.5, d["H"])
+    base_h = max(0.5, 0.35 * H)
+    amp = max(0.2, H - base_h)
+    nx, ny = 11, 11
+    heights = [
+        [amp * math.sin(math.pi * i / (ny - 1)) * math.sin(math.pi * j / (nx - 1))
+         for j in range(nx)]
+        for i in range(ny)
+    ]
+    return _spec("heightmap_solid", [{
+        "id": "out", "op": "heightmap",
+        "args": {"heights": heights, "size": [L, W], "base": base_h, "center": True},
+    }])
+
+
+def t_deform_solid(d, opts=None):
+    """Smooth deformation (twist / bend / taper) on a closed base solid."""
+    opts = opts or {}
+    ref = opts.get("ref_ops") or set()
+    L, W, H = max(3.0, d["L"]), max(3.0, d["W"]), max(3.0, d["H"])
+    if "twist" in ref:
+        dargs = {"mode": "twist", "axis": "z", "angle_deg": 45.0}
+    elif "bend" in ref:
+        dargs = {"mode": "bend", "axis": "z", "bend_axis": "x", "angle_deg": 30.0}
+    else:
+        dargs = {"mode": "taper", "axis": "z", "start_scale": 1.0, "end_scale": 0.78}
+    return _spec("deform_solid", [
+        {"id": "base", "op": "box", "args": {"size": [L, W, H]}},
+        {"id": "out", "op": "deform", "args": dargs, "inputs": ["base"]},
+    ])
+
+
+def t_morph_solid(d, opts=None):
+    """SDF shape interpolation between two solids via ``morph``."""
+    opts = opts or {}
+    ref = opts.get("ref_ops") or set()
+    L, W, H, R = max(4.0, d["L"]), max(4.0, d["W"]), max(4.0, d["H"]), max(4.0, d["R"])
+    if "torus" in ref:
+        return _spec("morph_solid", [
+            {"id": "a", "op": "torus",
+             "args": {"major_radius": R, "minor_radius": 0.28 * R}},
+            {"id": "b", "op": "torus",
+             "args": {"major_radius": R, "minor_radius": 0.22 * R}},
+            {"id": "out", "op": "morph",
+             "args": {"t": 0.5, "resolution": 22, "align_centers": True},
+             "inputs": ["a", "b"]},
+        ], segments=24)
+    return _spec("morph_solid", [
+        {"id": "a", "op": "box", "args": {"size": [L, W, H]}},
+        {"id": "b", "op": "cylinder",
+         "args": {"radius": 0.5 * min(L, W), "height": H}},
+        {"id": "out", "op": "morph",
+         "args": {"t": 0.5, "resolution": 24, "align_centers": True},
+         "inputs": ["a", "b"]},
+    ])
+
+
+def t_projection_extrude(d, opts=None):
+    """3D->2D projection followed by extrusion via ``projection_extrude``."""
+    opts = opts or {}
+    L, W, H = max(2.0, d["L"]), max(2.0, d["W"]), max(1.0, d["H"])
+    feats = [{"id": "base", "op": "box", "args": {"size": [L, W, max(H, 8.0)]}}]
+    src = "base"
+    if opts.get("holes", False) and not opts.get("blind_hole", False):
+        r = min(d.get("R") or 0.18 * min(L, W), 0.40 * min(L, W))
+        feats += [
+            {"id": "bore", "op": "cylinder",
+             "args": {"radius": max(0.4, r), "height": max(H, 8.0) * 2.0,
+                      "center": [0, 0, 0]}},
+            {"id": "cut", "op": "difference", "args": {}, "inputs": ["base", "bore"]},
+        ]
+        src = "cut"
+    feats.append({
+        "id": "out", "op": "projection_extrude",
+        "args": {"thickness": H, "cut": False, "axis": "z", "center": True},
+        "inputs": [src],
+    })
+    return _spec("projection_extrude", feats)
+
+
+def t_offset_solid(d, opts=None):  # noqa: ARG001
+    """Signed surface offset via ``offset``."""
+    L, W, H = max(3.0, d["L"]), max(3.0, d["W"]), max(3.0, d["H"])
+    r = max(0.4, min(0.12 * min(L, W, H), 3.0))
+    return _spec("offset_solid", [
+        {"id": "core", "op": "box",
+         "args": {"size": [L - 2.0 * r, W - 2.0 * r, H - 2.0 * r]}},
+        {"id": "out", "op": "offset",
+         "args": {"distance": r, "mode": "mitre"}, "inputs": ["core"]},
+    ])
+
+
+def t_field_tree_solid(d, opts=None):
+    """Nested scalar field expression tree via ``field_tree``."""
+    opts = opts or {}
+    ref = opts.get("ref_ops") or set()
+    L, W, H, R = max(6.0, d["L"]), max(6.0, d["W"]), max(6.0, d["H"]), max(6.0, d["R"])
+    if "torus" in ref:
+        return _spec("field_tree_solid", [{"id": "out", "op": "field_tree", "args": {
+            "tree": {"op": "torus", "major_radius": R, "minor_radius": 0.25 * R},
+            "bounds": [[-1.6 * R, -1.6 * R, -0.6 * R], [1.6 * R, 1.6 * R, 0.6 * R]],
+            "spacing": max(0.8, R / 10.0),
+        }}])
+    return _spec("field_tree_solid", [{"id": "out", "op": "field_tree", "args": {
+        "tree": {"op": "smooth_union", "radius": max(1.0, 0.08 * min(L, W, H)),
+                 "children": [
+                     {"op": "box", "size": [L, W, H]},
+                     {"op": "sphere", "radius": 0.45 * min(L, W, H)},
+                 ]},
+        "bounds": [[-0.75 * L, -0.75 * W, -0.75 * H], [0.75 * L, 0.75 * W, 0.75 * H]],
+        "spacing": max(1.0, min(L, W, H) / 10.0),
+    }}])
+
+
+def t_smooth_subdiv_solid(d, opts=None):
+    """Subdivision, smooth SDF blend, or Taubin smoothing/remesh via native ops."""
+    opts = opts or {}
+    ref = opts.get("ref_ops") or set()
+    L, W, H = max(4.0, d["L"]), max(4.0, d["W"]), max(4.0, d["H"])
+    if ref & {"subdiv", "subdivide"}:
+        return _spec("smooth_subdiv_solid", [
+            {"id": "base", "op": "box", "args": {"size": [L, W, H]}},
+            {"id": "out", "op": "subdivide",
+             "args": {"scheme": "catmull_clark", "levels": 1}, "inputs": ["base"]},
+        ])
+    if "remesh" in ref:
+        return _spec("smooth_subdiv_solid", [
+            {"id": "base", "op": "box", "args": {"size": [L, W, H]}},
+            {"id": "sub", "op": "subdivide",
+             "args": {"scheme": "simple", "levels": 2}, "inputs": ["base"]},
+            {"id": "out", "op": "repair",
+             "args": {"smooth": 1, "target_faces": 120}, "inputs": ["sub"]},
+        ])
+    if ref & {"sdf", "lipschitz", "hg_sdf"}:
+        return _spec("smooth_subdiv_solid", [{"id": "out", "op": "field_tree", "args": {
+            "tree": {"op": "smooth_union", "radius": max(1.0, 0.1 * min(L, W, H)),
+                     "children": [
+                         {"op": "box", "size": [L, W, H]},
+                         {"op": "sphere", "radius": 0.45 * min(L, W, H)},
+                     ]},
+            "bounds": [[-0.75 * L, -0.75 * W, -0.75 * H],
+                       [0.75 * L, 0.75 * W, 0.75 * H]],
+            "spacing": max(1.0, min(L, W, H) / 10.0),
+        }}])
+    return _spec("smooth_subdiv_solid", [
+        {"id": "base", "op": "box", "args": {"size": [L, W, H]}},
+        {"id": "sub", "op": "subdivide",
+         "args": {"scheme": "simple", "levels": 1}, "inputs": ["base"]},
+        {"id": "out", "op": "repair", "args": {"smooth": 2}, "inputs": ["sub"]},
     ])
 
 
@@ -672,6 +1008,18 @@ TEMPLATES_DIMS = {
     "gyroid_slab": [("x", 0, 1.0), ("y", 1, 1.0), ("z", 2, 1.0)],
     "sdf_field": [("x", 0, 1.0), ("y", 1, 1.0), ("z", 2, 1.0)],
     "text_plate": [("x", 0, 1.0), ("y", 1, 1.0), ("t", 2, 1.0)],
+    "shape_grammar": [],
+    "lsystem_tree": [],
+    "hull_solid": [("x", 0, 1.0), ("y", 1, 1.0), ("z", 2, 1.0)],
+    "minkowski_solid": [("x", 0, 1.0), ("y", 1, 1.0), ("z", 2, 1.0)],
+    "polyhedron_solid": [("x", 0, 1.0), ("y", 1, 1.0), ("z", 2, 1.0)],
+    "heightmap_solid": [("x", 0, 1.0), ("y", 1, 1.0), ("z", 2, 1.0)],
+    "deform_solid": [("z", 2, 1.0)],
+    "morph_solid": [],
+    "projection_extrude": [("x", 0, 1.0), ("y", 1, 1.0), ("z", 2, 1.0)],
+    "offset_solid": [("x", 0, 1.0), ("y", 1, 1.0), ("z", 2, 1.0)],
+    "field_tree_solid": [],
+    "smooth_subdiv_solid": [],
 }
 
 #: template id -> (build, covers, expected_genus|None, required_any)
@@ -688,7 +1036,7 @@ TEMPLATES = OrderedDict([
     ("revolve_solid", (t_revolve_solid, {"revolve", "transform", "cylinder"}, None,
                        {"revolve", "lathe"})),
     ("revolve_shell", (t_revolve_shell, {"revolve", "difference", "shell", "hole",
-                                         "cylinder", "thicken"}, 0,
+                                         "cylinder", "thicken", "transform"}, 0,
                        {"revolve", "lathe"})),
     ("loft_stack", (t_loft_stack, {"loft", "transform", "sweep"}, None,
                     {"loft"})),
@@ -696,6 +1044,7 @@ TEMPLATES = OrderedDict([
                     {"sweep", "path"})),
     ("extrude_profile", (t_extrude_profile, {"extrude", "cylinder", "difference",
                                              "pattern_polar", "hole", "teeth",
+                                             "add_interiors", "add_interior",
                                              "transform"}, None,
                          {"extrude", "profile"})),
     ("polar_array_cut", (t_polar_array_cut, {"cylinder", "pattern_polar", "difference",
@@ -711,19 +1060,72 @@ TEMPLATES = OrderedDict([
                          {"sphere", "cone"})),
     ("torus_ring", (t_torus_ring, {"torus", "difference", "transform"}, None,
                     {"torus"})),
-    ("gyroid_slab", (t_gyroid_slab, {"gyroid", "lattice", "surface", "sdf",
+    ("gyroid_slab", (t_gyroid_slab, {"gyroid", "gyroid3d", "lattice", "sdf",
+                                     "sdf3", "box", "intersection",
                                      "transform"}, None,
-                     {"lattice", "gyroid", "tpms", "schwarz", "surface", "sdf"})),
+                     {"lattice", "gyroid", "gyroid3d", "tpms", "schwarz", "neovius"})),
     ("sdf_field", (t_sdf_field, {"sdf", "lattice", "lipschitz", "tpms",
-                                  "schwarz", "surface", "offset", "smooth",
-                                  "morph", "mandelbulb", "iterate", "fractal"},
+                                  "schwarz", "neovius", "box", "intersection",
+                                  "shell", "offset", "smooth", "mandelbulb",
+                                  "iterate", "fractal"},
                    None,
                    {"sdf", "lipschitz", "mandelbulb", "iterate", "schwarz",
-                    "tpms", "surface"})),
+                    "neovius", "tpms"})),
     ("text_plate", (t_text_plate, {"text_emboss", "text_engrave", "extrude",
                                    "union", "transform"}, None,
                     {"text", "text_emboss", "text_engrave", "vectortext",
                      "glyphcurve", "glyph"})),
+    ("shape_grammar", (t_shape_grammar, {"shape_grammar", "rule", "startshape",
+                                         "cf::symmetry", "mirror", "flip", "loop",
+                                         "rand", "pattern_polar", "pattern_linear",
+                                         "box", "cylinder", "sphere", "cone",
+                                         "transform", "union"}, 0,
+                       {"shape_grammar", "rule", "startshape", "cf::symmetry"})),
+    ("lsystem_tree", (t_lsystem_tree, {"lsystem", "turtle", "rule", "startshape",
+                                       "sweep", "cylinder", "sphere", "transform",
+                                       "union"}, 0,
+                      {"lsystem", "turtle", "l_system", "axiom"})),
+    ("hull_solid", (t_hull_solid, {"hull", "box", "cylinder", "sphere", "cone",
+                                   "transform", "mirror", "union", "difference"},
+                    None, {"hull"})),
+    ("minkowski_solid", (t_minkowski_solid, {"minkowski", "box", "sphere",
+                                             "cylinder", "cone", "polyhedron",
+                                             "transform", "difference", "union"},
+                         None, {"minkowski"})),
+    ("polyhedron_solid", (t_polyhedron_solid, {"polyhedron", "box", "cylinder",
+                                               "sphere", "difference", "union",
+                                               "transform"},
+                          None, {"polyhedron"})),
+    ("heightmap_solid", (t_heightmap_solid, {"heightmap", "surface", "box",
+                                             "transform"}, 0,
+                         {"heightmap", "surface"})),
+    ("deform_solid", (t_deform_solid, {"deform", "twist", "bend", "box",
+                                       "cylinder", "extrude", "transform",
+                                       "union", "difference"}, 0,
+                      {"deform"})),
+    ("morph_solid", (t_morph_solid, {"morph", "box", "cylinder", "sphere", "torus",
+                                     "difference", "union", "transform", "sdf"},
+                     None, {"morph"})),
+    ("projection_extrude", (t_projection_extrude, {"projection", "projection_extrude",
+                                                   "extrude", "box", "cylinder",
+                                                   "difference", "union", "transform",
+                                                   "shell"}, None,
+                            {"projection", "projection_extrude"})),
+    ("offset_solid", (t_offset_solid, {"offset", "box", "cylinder", "sphere",
+                                       "shell", "chamfer", "fillet", "transform",
+                                       "union", "difference"}, 0,
+                      {"offset"})),
+    ("field_tree_solid", (t_field_tree_solid, {"libfive_tree", "field_tree", "sdf",
+                                               "torus", "sphere", "box", "cylinder",
+                                               "union", "difference", "intersection",
+                                               "smooth", "offset", "transform"},
+                          None, {"libfive_tree", "field_tree"})),
+    ("smooth_subdiv_solid", (t_smooth_subdiv_solid, {"smooth", "subdiv", "subdivide",
+                                                     "remesh", "sdf", "lipschitz",
+                                                     "box", "sphere", "cylinder",
+                                                     "union", "difference",
+                                                     "transform"}, 0,
+                             {"smooth", "subdiv", "subdivide", "remesh"})),
 ])
 
 
@@ -731,8 +1133,8 @@ def pick_template(record):
     """Choose the template whose op coverage best matches the record's own ops.
 
     Deterministic: highest covered fraction, ties broken by the template that
-    covers more ops, then by id.  Never inspects the family name -- that would
-    be a recipe in disguise.
+    covers more ops, then earlier registration order.  Never inspects the
+    family name or case id -- that would be a recipe in disguise.
     """
     ops = [_norm(o) for o in (record.get("operations") or []) if o]
     raw = [_norm(o) for o in (record.get("raw_ops") or []) if o]
@@ -746,7 +1148,7 @@ def pick_template(record):
                 continue
             hit = len(ref & covers)
             score = hit / float(len(ref))
-            tiebreak = (score, hit, -len(TEMPLATES) + list(TEMPLATES).index(tid))
+            tiebreak = (score, hit, -list(TEMPLATES).index(tid))
             if best is None or tiebreak > best_score:
                 best, best_score = tid, tiebreak
         if best is not None:
@@ -845,6 +1247,142 @@ def reference_ops(rec):
 
 
 # ---------------------------------------------------------------- selection
+def _source_url(rec):
+    src = rec.get("source") or {}
+    return str(src.get("url") or "") if isinstance(src, dict) else str(src or "")
+
+
+def exclusion_sets(bench_paths, rows):
+    """Corpus ids and source URLs already used by earlier frozen benches.
+
+    A later bench must be held out from every earlier one: not only by record
+    id, but by *source file* -- sibling modules of one source file share an op
+    vocabulary, and templates were tuned while looking at the earlier bench.
+    """
+    by_id = {}
+    for r in rows:
+        by_id.setdefault(str(r.get("id")), r)
+    ids, urls = set(), set()
+    for path in bench_paths or []:
+        doc = json.load(open(path, encoding="utf-8"))
+        for c in doc.get("cases") or []:
+            cid = str(c.get("corpus_id"))
+            ids.add(cid)
+            if cid in by_id and _source_url(by_id[cid]):
+                urls.add(_source_url(by_id[cid]))
+    return ids, urls
+
+
+def select_cases_v2(rows, n, seed, exclude_ids, exclude_urls, max_per_source=3):
+    """Stratified selection for a bench that must be disjoint from earlier ones.
+
+    Same rules as :func:`select_cases` (held-out families first, shipped-family
+    variants with non-preset parameters <= 30 %, quotas proportional to the
+    coverage matrix ``target_examples``), plus:
+
+    * records whose id or source URL appears in an earlier bench are dropped;
+    * duplicate ids are kept once (first file in sorted order);
+    * at most ``max_per_source`` cases per source URL, so one big library file
+      cannot dominate a category;
+    * a category's quota is filled from its held-out records first, then from
+      its own shipped-family variants (global 30 % cap), and only then topped up
+      from other categories -- so categories with few held-out records (text,
+      organic) are still represented by real records of that category.
+    """
+    import random
+    matrix = json.load(open(os.path.join(ROOT, MATRIX), encoding="utf-8"))
+    quota_w = {c["id"]: int(c.get("target_examples") or 0) for c in matrix["categories"]}
+
+    seen_ids, pool = set(), []
+    for rec in rows:
+        rid = str(rec.get("id"))
+        fam = (rec.get("shape") or {}).get("family")
+        if rid in seen_ids or rid in exclude_ids:
+            continue
+        if not fam or str(rec.get("kind")) not in GEOMETRIC_KINDS or not accepted(rec):
+            continue
+        if _source_url(rec) and _source_url(rec) in exclude_urls:
+            continue
+        seen_ids.add(rid)
+        pool.append(rec)
+
+    held, variants = [], []
+    for rec in pool:
+        covered = excluded_by((rec.get("shape") or {}).get("family"))
+        if covered is None:
+            held.append((rec, None))
+        elif substantive(rec) and _distinct_params(rec, covered):
+            variants.append((rec, covered))
+
+    rng = random.Random(seed)
+
+    def ranked(items):
+        out = []
+        for rec, covered in items:
+            q = rec.get("quality") or {}
+            rank = (2 if substantive(rec) else 0) + (1 if expected_topology(rec) else 0)
+            out.append((rank, float(q.get("quality_score") or 0.0), str(rec.get("id")),
+                        rec, covered))
+        rng.shuffle(out)
+        out.sort(key=lambda t: (-t[0], -t[1], t[2]))
+        return [(t[3], t[4]) for t in out]
+
+    cat_of = lambda rec: (rec.get("shape") or {}).get("category") or "other"
+    cats = sorted({cat_of(r) for r, _ in held} | {cat_of(r) for r, _ in variants})
+    total_w = sum(quota_w.get(c, 5) for c in cats) or 1
+    alloc, remainders = {}, []
+    for c in cats:
+        exact = n * quota_w.get(c, 5) / float(total_w)
+        alloc[c] = int(math.floor(exact))
+        remainders.append((exact - math.floor(exact), c))
+    for _, c in sorted(remainders, reverse=True)[:max(0, n - sum(alloc.values()))]:
+        alloc[c] += 1
+
+    per_source = Counter()
+    chosen, chosen_ids = [], set()
+    max_variants = int(MAX_VARIANT_FRACTION * n)
+
+    def take(item):
+        rec = item[0]
+        url = _source_url(rec)
+        if str(rec.get("id")) in chosen_ids:
+            return False
+        if url and per_source[url] >= max_per_source:
+            return False
+        if item[1] is not None and sum(1 for _r, cv in chosen if cv) >= max_variants:
+            return False
+        chosen.append(item)
+        chosen_ids.add(str(rec.get("id")))
+        if url:
+            per_source[url] += 1
+        return True
+
+    held_by = {c: ranked([h for h in held if cat_of(h[0]) == c]) for c in cats}
+    var_by = {c: ranked([v for v in variants if cat_of(v[0]) == c]) for c in cats}
+    for c in cats:
+        got = 0
+        for item in held_by[c] + var_by[c]:
+            if got >= alloc[c]:
+                break
+            if take(item):
+                got += 1
+    # top up: strongest leftover held-out records first, then variants
+    for group in (held, variants):
+        for item in ranked(group):
+            if len(chosen) >= n:
+                break
+            take(item)
+    chosen.sort(key=lambda t: (str(cat_of(t[0])), str(t[0].get("id"))))
+    return chosen, {"pool": len(pool), "held_pool": len(held),
+                    "variant_pool": len(variants), "alloc": alloc,
+                    "max_per_source": max_per_source}
+
+
+def case_list_sha256(cases):
+    ids = sorted(str(c.get("corpus_id")) for c in cases)
+    return hashlib.sha256("\n".join(ids).encode("utf-8")).hexdigest()
+
+
 def select_cases(rows, n=DEFAULT_N, seed=1102):
     """Deterministic stratified selection of held-out cases."""
     import random
@@ -991,8 +1529,11 @@ def build_case(rec, idx):
                 break
     template_opts = {
         "holes": hole_evidence(rec),
+        "blind_hole": (any("blind" in o for o in raw_ops)
+                       and not any("through" in o for o in raw_ops)),
         "inner_loops": bool(raw_ops & {"add_interiors", "inner", "interior",
                                        "add_interior"}),
+        "ref_ops": ref,
         "text": text_value,
         # Declared parameter values are evidence about the reference part; a
         # template may consume them (period, thickness, clip radius), but never
@@ -1327,30 +1868,169 @@ def regenerate(n=DEFAULT_N, seed=1102):
     return cases, state
 
 
+#: per-case fields written by a run; cleared before every run so a case that
+#: fails early can never inherit a pass from the file it was loaded from.
+RESULT_FIELDS = ("model_id", "build_success", "verify_verdict", "verify_pass",
+                 "faithful_build_success", "params_match", "dims_ignored",
+                 "param_recovery_pct", "param_recovery_mm", "seconds", "notes",
+                 "verify_checks_failed", "measured_bbox_mm", "measured_genus",
+                 "measured_components", "topology_match")
+
+
+def reset_results(case):
+    for k in RESULT_FIELDS:
+        case.pop(k, None)
+    case.update({"model_id": None, "build_success": False, "verify_verdict": None,
+                 "verify_pass": False, "faithful_build_success": False,
+                 "params_match": None, "dims_ignored": [], "param_recovery_pct": None,
+                 "param_recovery_mm": None, "seconds": None, "notes": ""})
+    return case
+
+
+def rebuild_cases(cases, rows):
+    """Re-express a frozen case list with the *current* templates.
+
+    The frozen artifact is the list of corpus records (ids + sha); the
+    expression (template, spec, op classification) is what is being measured,
+    so after the op set grows the same records are re-derived from their own
+    corpus entries.  Case ids and order are kept.
+    """
+    by_key, by_id = {}, {}
+    for r in rows:
+        by_key.setdefault((str(r.get("id")), r.get("_source_file")), r)
+        by_id.setdefault(str(r.get("id")), r)
+    out = []
+    for i, case in enumerate(cases):
+        cid = str(case.get("corpus_id"))
+        rec = by_key.get((cid, case.get("corpus_file"))) or by_id.get(cid)
+        if rec is None:
+            raise SystemExit("frozen case %s: corpus record %r is gone"
+                             % (case.get("id"), cid))
+        new = build_case(rec, i)
+        new["id"] = case.get("id") or new["id"]
+        out.append(new)
+    return out
+
+
+def check_freeze(doc):
+    """A frozen bench must still contain exactly the frozen records."""
+    freeze = (doc.get("protocol") or {}).get("freeze") or doc.get("freeze")
+    if not freeze:
+        return None
+    got = case_list_sha256(doc.get("cases") or [])
+    if got != freeze.get("sorted_id_sha256"):
+        raise SystemExit("frozen case list changed: sha %s != frozen %s"
+                         % (got, freeze.get("sorted_id_sha256")))
+    return freeze
+
+
 def main(argv=None):
+    global BENCH_VERSION
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--cases", default=os.path.join(ROOT, "corpus/bench", BENCH_VERSION + ".json"))
+    ap.add_argument("--bench", default=BENCH_VERSION,
+                    help="bench name (generalization_v1, generalization_v2, ...)")
+    ap.add_argument("--cases", default=None,
+                    help="case file (default corpus/bench/<bench>.json)")
+    ap.add_argument("--prompts", default=None,
+                    help="Text2CAD-style L0-L3 prompt benchmark JSON file")
     ap.add_argument("--out", default=None)
     ap.add_argument("--regenerate", action="store_true",
                     help="rebuild the case list from corpus/normalized/*.jsonl")
+    ap.add_argument("--freeze", action="store_true",
+                    help="select a NEW case list disjoint from --exclude-bench and "
+                         "write it without running anything")
+    ap.add_argument("--exclude-bench", action="append", default=[],
+                    help="earlier bench file(s) whose records/source URLs are excluded")
+    ap.add_argument("--only-ids", default=None,
+                    help="with --freeze: restrict the pool to the corpus ids in this "
+                         "file (one per line), e.g. freshly harvested records")
+    ap.add_argument("--max-per-source", type=int, default=3)
+    ap.add_argument("--rebuild-specs", action="store_true",
+                    help="re-express the frozen records with the current templates")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--seed", type=int, default=1102)
     ap.add_argument("--cases-count", type=int, default=DEFAULT_N)
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--atta-home", default=None,
+                    help="model workspace (default: a fresh temp dir per run, so "
+                         "concurrent runs and stale geometry caches cannot interfere)")
     args = ap.parse_args(argv)
 
+    import tempfile
+    os.environ["ATTA_HOME"] = os.path.abspath(
+        args.atta_home or tempfile.mkdtemp(prefix="atta-bench-"))
+    if args.prompts:
+        out = args.out or args.prompts
+        run_prompts_bench(args.prompts, out_path=out, limit=args.limit,
+                          quiet=args.quiet)
+        return 0
+    BENCH_VERSION = args.bench
+    if args.cases is None:
+        args.cases = os.path.join(ROOT, "corpus/bench", BENCH_VERSION + ".json")
     out = args.out or args.cases
+    if args.freeze:
+        rows = load_corpus()
+        state = corpus_state(rows)
+        ex_ids, ex_urls = exclusion_sets(args.exclude_bench, rows)
+        if args.only_ids:
+            keep = {ln.strip() for ln in open(args.only_ids, encoding="utf-8")
+                    if ln.strip() and not ln.startswith("#")}
+            rows = [r for r in rows if str(r.get("id")) in keep]
+        picked, sel = select_cases_v2(rows, args.cases_count, args.seed, ex_ids, ex_urls,
+                                      max_per_source=args.max_per_source)
+        cases = [build_case(rec, i) for i, (rec, _cov) in enumerate(picked)]
+        freeze = {
+            "frozen_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "n_cases": len(cases),
+            "corpus_ids": sorted(str(c["corpus_id"]) for c in cases),
+            "sorted_id_sha256": case_list_sha256(cases),
+            "seed": args.seed,
+            "selection": dict(sel, exclude_benches=[os.path.relpath(p, ROOT)
+                                                    for p in args.exclude_bench],
+                              excluded_ids=len(ex_ids), excluded_source_urls=len(ex_urls),
+                              only_ids=(os.path.relpath(args.only_ids, ROOT)
+                                        if args.only_ids else None)),
+            "corpus_state_at_freeze": state,
+            "freeze_commit": None,
+            "rule": ("case list frozen and committed before any template/op change; "
+                     "scored once at freeze (baseline); later runs must reproduce this "
+                     "sha or the runner refuses"),
+        }
+        proto = protocol_doc(len(cases))
+        proto["freeze"] = freeze
+        doc = {"bench": BENCH_VERSION, "generated_at": freeze["frozen_at"],
+               "protocol": proto, "cases": cases}
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+        with open(out, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, ensure_ascii=False, indent=1)
+        print("froze %d cases -> %s  sha=%s" % (len(cases), out, freeze["sorted_id_sha256"]))
+        print("categories:", Counter(c["category"] for c in cases).most_common())
+        print("variants:", sum(1 for c in cases if c["variant_of_shipped"]),
+              " selection:", json.dumps(sel))
+        return 0
     if args.regenerate:
         cases, state = regenerate(n=args.cases_count, seed=args.seed)
         doc = {"bench": BENCH_VERSION, "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                                                     time.gmtime()),
-               "protocol": protocol_doc(), "cases": cases}
+               "protocol": protocol_doc(len(cases)), "cases": cases}
     else:
         doc = json.load(open(args.cases, encoding="utf-8"))
-        cases, state = doc["cases"], (doc.get("summary") or {}).get("corpus_state") or {}
+        if doc.get("bench"):
+            BENCH_VERSION = doc["bench"]
+        freeze = check_freeze(doc)
         rows = load_corpus()
         state = corpus_state(rows)
-        doc["protocol"] = protocol_doc()
+        cases = doc["cases"]
+        if args.rebuild_specs:
+            cases = rebuild_cases(cases, rows)
+        doc["protocol"] = protocol_doc(len(cases))
+        if freeze:
+            doc["protocol"]["freeze"] = freeze
+        doc["protocol"]["expression"] = ("rebuilt from corpus records with current templates"
+                                         if args.rebuild_specs else
+                                         "specs as stored in the case file")
+    for case in cases:
+        reset_results(case)
 
     todo = cases[: args.limit] if args.limit else cases
     for i, case in enumerate(todo, 1):
@@ -1408,14 +2088,25 @@ def _stage(case):
     return "express"
 
 
-def protocol_doc():
+def _verify_native_ops():
+    """Confirm every op declared in NATIVE_OP_ALIASES is live in FEATURE_OPS."""
+    from atta import families, features  # noqa: F401
+    missing = {k: v for k, v in NATIVE_OP_ALIASES.items()
+               if v not in features.FEATURE_OPS}
+    if missing:
+        raise RuntimeError("NATIVE_OP_ALIASES references unregistered ops: %s" % missing)
+    return sorted(features.FEATURE_OPS.keys())
+
+
+def protocol_doc(n_cases=None):
+    live_ops = _verify_native_ops()
     return {
         "name": BENCH_VERSION,
         "requirement": "docs/SHAPE_COVERAGE.md (held-out bench section)",
         "surface": "generic Spec v3 feature graph (atta.spec); shipped recipes are never called",
         "quality": "draft",
         "case_budget_s": CASE_BUDGET_S,
-        "n_cases": DEFAULT_N,
+        "n_cases": n_cases if n_cases is not None else DEFAULT_N,
         "stratification": "categories proportional to docs/coverage_matrix.json target_examples",
         "held_out_rule": ("a case is held out when shape.family does not map to a shipped "
                           "recipe (see excluded_families); shipped-family variants are "
@@ -1423,6 +2114,8 @@ def protocol_doc():
                           % (100 * MAX_VARIANT_FRACTION)),
         "excluded_families": {k: v for k, v in EXCLUDED_FAMILIES.items()},
         "native_ops": sorted(NATIVE_OPS),
+        "native_op_aliases": dict(sorted(NATIVE_OP_ALIASES.items())),
+        "live_feature_ops_count": len(live_ops),
         "constructible_ops": CONSTRUCTIBLE_OPS,
         "missing_ops": MISSING_OPS,
         "templates": {k: {"covers": sorted(v[1]), "declared_genus": v[2]}
@@ -1440,6 +2133,448 @@ def protocol_doc():
             "degraded verify is counted as a failure.",
         ],
     }
+
+
+# ---------------------------------------------------------------- prompts (L0-L3)
+
+def _conjure_plan_to_spec(plan: dict, name: str) -> dict:
+    """Convert a conjure plan to a Spec v3 feature-graph dict (never a recipe)."""
+    import copy
+    from atta import spec as specmod
+
+    hint = copy.deepcopy(plan["build"])
+    kind = hint.get("kind")
+    if kind == "graph":
+        model_plan = {
+            "kind": "graph",
+            "features": hint["features"],
+            "output": hint["output"],
+        }
+    elif kind is None:
+        op = str(hint.pop("op", "sdf_blend"))
+        box = hint.pop("size_mm", None)
+        if op == "sdf_blend" and "size" not in hint and box is not None:
+            hint["size"] = box
+        model_plan = {
+            "kind": "graph",
+            "output": "body",
+            "features": [{"id": "body", "op": op, "args": hint}],
+        }
+    else:
+        raise RuntimeError("unsupported conjure build kind %r (recipes forbidden)" % kind)
+
+    parsed = plan.get("prompt_parsed") or {}
+    material = parsed.get("material") or "ceramic"
+    return {
+        "schema": specmod.SCHEMA,
+        "name": str(name),
+        "model": model_plan,
+        "quality": "draft",
+        "material": material,
+        "finish": {},
+        "constraints": copy.deepcopy(plan.get("constraints") or {}),
+        "assumptions": list(plan.get("assumptions") or []),
+    }
+
+
+def _eval_prompt_predicates(pred: dict, *, topo: dict, bbox_size: list[float],
+                            wall: dict, design_checks: dict,
+                            plan: dict, spec_material: str) -> dict:
+    """Evaluate reference-free executable geometric predicates on measured mesh."""
+    results = {}
+
+    if "closed" in pred:
+        got = bool(topo.get("closed"))
+        results["closed"] = {
+            "ok": got is bool(pred["closed"]),
+            "measured": got,
+            "expected": bool(pred["closed"]),
+        }
+
+    if "n_components" in pred:
+        got = int(topo.get("n_components", -1))
+        exp = int(pred["n_components"])
+        results["n_components"] = {
+            "ok": got == exp,
+            "measured": got,
+            "expected": exp,
+        }
+
+    if "genus_min" in pred:
+        got = int(topo.get("genus", -1))
+        exp = int(pred["genus_min"])
+        results["genus_min"] = {
+            "ok": got >= exp,
+            "measured": got,
+            "expected": ">= %d" % exp,
+        }
+
+    if "genus_exact" in pred:
+        got = int(topo.get("genus", -1))
+        exp = int(pred["genus_exact"])
+        results["genus_exact"] = {
+            "ok": got == exp,
+            "measured": got,
+            "expected": exp,
+        }
+
+    if "min_wall_mm" in pred:
+        got = wall.get("min_mm")
+        exp = float(pred["min_wall_mm"])
+        ok = got is not None and float(got) >= exp
+        results["min_wall_mm"] = {
+            "ok": ok,
+            "measured": None if got is None else round(float(got), 4),
+            "expected": ">= %.3f" % exp,
+        }
+
+    if "max_wall_mm" in pred:
+        got = wall.get("min_mm")
+        exp = float(pred["max_wall_mm"])
+        ok = got is not None and float(got) <= exp
+        results["max_wall_mm"] = {
+            "ok": ok,
+            "measured": None if got is None else round(float(got), 4),
+            "expected": "<= %.3f" % exp,
+        }
+
+    if "aspect_ratio_range" in pred:
+        lo, hi = (float(x) for x in pred["aspect_ratio_range"])
+        s = sorted((float(x) for x in bbox_size), reverse=True)
+        mode = pred.get("aspect_mode", "max_over_min")
+        denom = s[1] if mode == "long_over_mid" else s[2]
+        ratio = (s[0] / denom) if denom > 0 else float("inf")
+        results["aspect_ratio"] = {
+            "ok": bool(lo <= ratio <= hi),
+            "measured": round(ratio, 4),
+            "expected": [lo, hi],
+            "mode": mode,
+        }
+
+    if "bbox_check" in pred:
+        bc = pred["bbox_check"]
+        mode = bc.get("mode")
+        if mode == "sorted_xyz":
+            got_s = sorted((float(x) for x in bbox_size), reverse=True)
+            exp_s = sorted((float(x) for x in bc["target_mm"]), reverse=True)
+            tol_pct = float(bc.get("tol_pct", 5.0))
+            errs = [abs(a - b) / max(b, 1e-6) * 100.0 for a, b in zip(got_s, exp_s)]
+            worst = max(errs)
+            results["bbox_check"] = {
+                "ok": worst <= tol_pct,
+                "measured": [round(x, 3) for x in got_s],
+                "expected": exp_s,
+                "max_rel_err_pct": round(worst, 3),
+                "tol_pct": tol_pct,
+            }
+        elif mode == "max_xy_range":
+            got_xy = max(float(bbox_size[0]), float(bbox_size[1]))
+            lo, hi = float(bc["min"]), float(bc["max"])
+            results["bbox_check"] = {
+                "ok": lo <= got_xy <= hi,
+                "measured": round(got_xy, 3),
+                "expected": [lo, hi],
+            }
+        elif mode == "z_range":
+            got_z = float(bbox_size[2])
+            lo, hi = float(bc["min"]), float(bc["max"])
+            results["bbox_check"] = {
+                "ok": lo <= got_z <= hi,
+                "measured": round(got_z, 3),
+                "expected": [lo, hi],
+            }
+        elif mode == "max_dim_le":
+            got_max = max(float(x) for x in bbox_size)
+            lim = float(bc["max"])
+            results["bbox_check"] = {
+                "ok": got_max <= lim,
+                "measured": round(got_max, 3),
+                "expected": "<= %.3f" % lim,
+            }
+        elif mode == "sorted_aspect_min":
+            s = sorted((float(x) for x in bbox_size), reverse=True)
+            ar = (s[0] / s[1]) if s[1] > 0 else 0.0
+            lim = float(bc["min"])
+            results["bbox_check"] = {
+                "ok": ar >= lim,
+                "measured": round(ar, 4),
+                "expected": ">= %.3f" % lim,
+            }
+
+    if "min_symmetric_axes" in pred:
+        sym = design_checks.get("symmetry") or {}
+        axes = list((sym.get("value") or {}).get("axes") or [])
+        need = int(pred["min_symmetric_axes"])
+        results["symmetry"] = {
+            "ok": len(axes) >= need,
+            "measured": axes,
+            "expected": ">= %d axes" % need,
+        }
+
+    if "symmetry_axes" in pred:
+        sym = design_checks.get("symmetry") or {}
+        axes = list((sym.get("value") or {}).get("axes") or [])
+        req = list(pred["symmetry_axes"])
+        results["symmetry"] = {
+            "ok": all(ax in axes for ax in req),
+            "measured": axes,
+            "expected": req,
+        }
+
+    if pred.get("stability_required"):
+        stab = design_checks.get("stability") or {}
+        results["stability"] = {
+            "ok": stab.get("ok") is True,
+            "measured": stab.get("value"),
+            "expected": True,
+        }
+
+    if "readability_min" in pred:
+        rd = design_checks.get("readability") or {}
+        score = (rd.get("value") or {}).get("score")
+        need = float(pred["readability_min"])
+        results["readability"] = {
+            "ok": score is not None and float(score) >= need,
+            "measured": score,
+            "expected": ">= %.3f" % need,
+        }
+
+    if "expected_material" in pred:
+        exp_m = str(pred["expected_material"])
+        results["material"] = {
+            "ok": str(spec_material) == exp_m,
+            "measured": spec_material,
+            "expected": exp_m,
+        }
+
+    if "expected_provenance_size" in pred:
+        got_p = (plan.get("provenance") or {}).get("size_mm")
+        exp_p = str(pred["expected_provenance_size"])
+        results["provenance_honesty"] = {
+            "ok": got_p == exp_p,
+            "measured": got_p,
+            "expected": exp_p,
+        }
+
+    return results
+
+
+def run_prompt_case(case: dict) -> dict:
+    """Execute one L0-L3 prompt case: prompt -> conjure -> propose -> model -> verify -> design."""
+    from atta import conjure, engine, mesh as M, metrology, spec as specmod
+
+    t0 = time.perf_counter()
+    out = dict(case)
+    out.update({
+        "archetype_key": None,
+        "matched_by": None,
+        "provenance_size": None,
+        "propose_ok": False,
+        "model_id": None,
+        "build_success": False,
+        "verify_verdict": None,
+        "verify_pass": False,
+        "predicate_results": {},
+        "failed_predicates": [],
+        "predicate_pass": False,
+        "case_pass": False,
+        "measured_bbox_mm": None,
+        "measured_genus": None,
+        "measured_components": None,
+        "measured_min_wall_mm": None,
+        "seconds": None,
+        "notes": "",
+    })
+
+    old = None
+    try:
+        if hasattr(signal, "SIGALRM"):
+            old = signal.signal(signal.SIGALRM, _alarm)
+            signal.alarm(CASE_BUDGET_S)
+
+        plan = conjure.conjure_from_prompt(
+            case["prompt"], seed=int(case.get("seed", 0)))
+        out["archetype_key"] = (plan.get("archetype") or {}).get("key")
+        out["matched_by"] = (plan.get("archetype") or {}).get("matched_by")
+        out["provenance_size"] = (plan.get("provenance") or {}).get("size_mm")
+
+        spec_obj = _conjure_plan_to_spec(plan, case["id"])
+        proposed = specmod.propose_spec(spec_obj)
+        out["propose_ok"] = bool(proposed.get("ok"))
+        if not out["propose_ok"]:
+            out["notes"] = "propose_spec failed: %s" % proposed.get("errors")
+            return out
+
+        built = engine.model(spec=proposed["spec"], quality="draft", name=case["id"])
+        out["model_id"] = built.get("model_id")
+        out["build_success"] = bool(out["model_id"])
+        if not out["build_success"]:
+            out["notes"] = "engine.model returned no model_id"
+            return out
+
+        ver = engine.verify(model_id=out["model_id"], level="standard")
+        out["verify_verdict"] = ver.get("verdict")
+        out["verify_pass"] = ver.get("verdict") == "pass"
+
+        des = engine.design(model_id=out["model_id"])
+        design_checks = {c["id"]: c for c in (des.get("checks") or [])}
+
+        _, mesh_obj, _ = engine._load(out["model_id"])
+        topo = M.topology(mesh_obj)
+        bbox_size = metrology.bbox_mm(mesh_obj)["size"]
+        wall = metrology.wall_thickness(mesh_obj, max_samples=400)
+
+        out["measured_bbox_mm"] = [round(float(x), 3) for x in bbox_size]
+        out["measured_genus"] = int(topo["genus"])
+        out["measured_components"] = int(topo["n_components"])
+        out["measured_min_wall_mm"] = wall.get("min_mm")
+
+        pred_res = _eval_prompt_predicates(
+            case.get("predicates") or {},
+            topo=topo,
+            bbox_size=bbox_size,
+            wall=wall,
+            design_checks=design_checks,
+            plan=plan,
+            spec_material=proposed["spec"].get("material"),
+        )
+        failed = [k for k, v in pred_res.items() if not v.get("ok")]
+        out["predicate_results"] = pred_res
+        out["failed_predicates"] = failed
+        out["predicate_pass"] = len(failed) == 0
+        out["case_pass"] = bool(
+            out["propose_ok"]
+            and out["build_success"]
+            and out["verify_pass"]
+            and out["predicate_pass"]
+        )
+        if failed:
+            out["notes"] = "failed predicates: " + ", ".join(failed)
+        elif not out["verify_pass"]:
+            out["notes"] = "verify=%s" % out["verify_verdict"]
+        else:
+            out["notes"] = "ok (%s)" % out["archetype_key"]
+    except Exception as exc:
+        out["notes"] = "%s: %s" % (type(exc).__name__, exc)
+    finally:
+        if hasattr(signal, "SIGALRM"):
+            try:
+                signal.alarm(0)
+                if old is not None:
+                    signal.signal(signal.SIGALRM, old)
+            except Exception:
+                pass
+        out["seconds"] = round(time.perf_counter() - t0, 3)
+    return out
+
+
+def summarize_prompts(cases: list[dict], tiers: list[str] | None = None) -> dict:
+    tier_order = list(tiers or ["L0_abstract", "L1_beginner", "L2_intermediate", "L3_expert"])
+
+    def _stats(rows):
+        n = len(rows)
+        if n == 0:
+            return {"cases": 0, "build_success": 0.0, "propose_ok": 0.0,
+                    "verify_pass": 0.0, "predicate_pass": 0.0, "case_pass": 0.0}
+        return {
+            "cases": n,
+            "build_success": round(sum(1 for r in rows if r.get("build_success")) / n, 4),
+            "propose_ok": round(sum(1 for r in rows if r.get("propose_ok")) / n, 4),
+            "verify_pass": round(sum(1 for r in rows if r.get("verify_pass")) / n, 4),
+            "predicate_pass": round(sum(1 for r in rows if r.get("predicate_pass")) / n, 4),
+            "case_pass": round(sum(1 for r in rows if r.get("case_pass")) / n, 4),
+            "passed_count": sum(1 for r in rows if r.get("case_pass")),
+        }
+
+    by_tier = {}
+    for tier in tier_order:
+        rows = [c for c in cases if c.get("tier") == tier]
+        by_tier[tier] = _stats(rows)
+
+    pred_counts = {}
+    for c in cases:
+        for pname, pres in (c.get("predicate_results") or {}).items():
+            entry = pred_counts.setdefault(pname, {"passed": 0, "total": 0})
+            entry["total"] += 1
+            if pres.get("ok"):
+                entry["passed"] += 1
+    by_predicate = {
+        k: {"passed": v["passed"], "total": v["total"],
+            "rate": round(v["passed"] / v["total"], 4) if v["total"] else 0.0}
+        for k, v in sorted(pred_counts.items())
+    }
+
+    overall = _stats(cases)
+    overall["seconds_total"] = round(sum(float(c.get("seconds") or 0.0) for c in cases), 2)
+    overall["by_tier"] = by_tier
+    overall["by_predicate"] = by_predicate
+    return overall
+
+
+def run_prompts_bench(prompts_path: str, *, out_path: str | None = None,
+                      limit: int = 0, quiet: bool = False) -> dict:
+    doc = json.load(open(prompts_path, encoding="utf-8"))
+    cases = list(doc.get("cases") or [])
+    if limit:
+        cases = cases[:int(limit)]
+    results = []
+    for i, c in enumerate(cases, 1):
+        res = run_prompt_case(c)
+        results.append(res)
+        if not quiet:
+            print("[%2d/%2d] %-15s %-10s %-5s %-8s %5.2fs %s" % (
+                i, len(cases),
+                str(res.get("tier"))[:15],
+                str(res.get("archetype_key"))[:10],
+                "PASS" if res.get("case_pass") else "FAIL",
+                res.get("verify_verdict") or "-",
+                res.get("seconds") or 0.0,
+                (res.get("notes") or "")[:65]), flush=True)
+
+    summary = summarize_prompts(results, tiers=doc.get("tiers"))
+    failures = [
+        {
+            "id": r.get("id"),
+            "tier": r.get("tier"),
+            "category": r.get("category"),
+            "prompt": r.get("prompt"),
+            "archetype_key": r.get("archetype_key"),
+            "verify_verdict": r.get("verify_verdict"),
+            "failed_predicates": r.get("failed_predicates"),
+            "notes": r.get("notes"),
+        }
+        for r in results if not r.get("case_pass")
+    ]
+    report = {
+        "bench": doc.get("bench", "generalization_v3_prompts"),
+        "version": doc.get("version", "1.2.3beta"),
+        "evaluated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "source_file": os.path.relpath(prompts_path, ROOT) if os.path.isabs(prompts_path) else prompts_path,
+        "tiers": doc.get("tiers", ["L0_abstract", "L1_beginner", "L2_intermediate", "L3_expert"]),
+        "summary": summary,
+        "failures": failures,
+        "cases": results,
+    }
+    if out_path:
+        os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(report, fh, ensure_ascii=False, indent=1)
+
+    if not quiet:
+        print("\n== %s  n=%d  (%.2fs)" % (
+            report["bench"], summary["cases"], summary["seconds_total"]))
+        print("overall case_pass=%.1f%% (%d/%d)  build=%.1f%%  verify=%.1f%%  predicates=%.1f%%" % (
+            100.0 * summary["case_pass"], summary["passed_count"], summary["cases"],
+            100.0 * summary["build_success"], 100.0 * summary["verify_pass"],
+            100.0 * summary["predicate_pass"]))
+        for tname, ts in summary["by_tier"].items():
+            print("  %-16s %2d/%-2d (%5.1f%%)  build=%.1f%%  verify=%.1f%%  pred=%.1f%%" % (
+                tname, ts.get("passed_count", 0), ts["cases"],
+                100.0 * ts["case_pass"], 100.0 * ts["build_success"],
+                100.0 * ts["verify_pass"], 100.0 * ts["predicate_pass"]))
+        if out_path:
+            print("wrote", out_path)
+    return report
 
 
 if __name__ == "__main__":

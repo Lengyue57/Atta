@@ -1,6 +1,6 @@
 # @atta/dsh-atta
 
-Atta 1.2.2beta 的 DSH 插件（无头建模）。插件本身不包含几何内核，只是把 Atta 的 12 个命令
+Atta 1.2.3beta 的 DSH 插件（无头建模）。插件本身不包含几何内核，只是把 Atta 的 12 个命令
 包装成 DSH 工具（`atta_*`），所有几何计算都交给 Atta 引擎：
 
 - recipe / Spec v3 / feature graph -> numpy geometry -> Blender finish
@@ -71,16 +71,16 @@ python3 -m atta.agent.install dsh --create   # 写 profile 的 dependency + bund
 |---|---|
 | `atta_doctor` | 引擎 / Blender / recipe 数 / 当前模型 |
 | `atta_catalog` | recipe、feature/constraint schema、工作流 |
-| `atta_spec` | Spec v3 validate / propose / compile / schema |
-| `atta_model` | recipe / spec / graph 建模；`patches` refine |
+| `atta_spec` | Spec v3 validate / preflight / propose / compile / patch / schema |
+| `atta_model` | recipe / spec / graph 建模；`patches` refine（含 graph/assembly） |
 | `atta_variant` | 采样、targets/constraints 求解、Pareto；`base` 做 fit；装配 `part.param` |
-| `atta_describe` | 结构事实（bbox/体积/拓扑/壁厚/曲率/空间探针） |
+| `atta_describe` | 结构事实（bbox/体积/拓扑/壁厚/曲率/SIR/DangEL/FluxEE/空间探针 + 3D diff） |
 | `atta_verify` | 三态判决 + receipt |
 | `atta_preview` | studio/catalog/dark/clay/diagnostic 图 + facts + 视觉统计（图片回传） |
-| `atta_deliver` | 非 pass 不写文件；GLB/OBJ/STL/BLEND（图形子集 +STEP）+ manifest |
+| `atta_deliver` | 非 pass 不写文件；GLB/OBJ/STL/BLEND/DXF/SVG 工程图（图形子集 +STEP）+ manifest |
 | `atta_run` | 一次调用跑多步 |
 | `atta_conjure` | 无数据虚构建模：语义标签 + 原型比例 + 种子 → 可信参数/构建方案；`build=true` 直接建模 |
-| `atta_design` | 设计法则检查：轮廓可读性、负空间、形体层次、比例、对称、可打印/脱模/可加工 |
+| `atta_design` | 设计法则检查：轮廓可读性、负空间、形体层次、比例、对称、稳定性、可打印/脱模/可加工 |
 | `atta_plugin_status` | **仅降级时出现**：诊断占位工具 |
 
 
