@@ -540,7 +540,7 @@ check('plugin does not hard-code the checkout root in the shipped entry', (() =>
 describe('8. engine round trip (needs python + importable atta)')
 
 function findWorkingPython() {
-  const probe = 'import atta,sys;sys.stdout.write(atta.__version__)'
+  const probe = 'import atta,atta.cli,sys;sys.stdout.write(atta.__version__)'
   for (const cmd of ['python3', 'python']) {
     try {
       const out = execFileSync(cmd, ['-c', probe], {
@@ -554,7 +554,7 @@ function findWorkingPython() {
 
 const python = findWorkingPython()
 if (!python) {
-  skip('engine round trip', 'no python interpreter can import atta')
+  skip('engine round trip', 'no python interpreter can import atta.cli')
 } else {
   const root = path.dirname(PLUGIN_DIR)
   I.resetPythonCache()
@@ -959,22 +959,28 @@ describe('12. host API resolution (must degrade, never throw)')
       result.tried.some((t) => t.startsWith('cjs:')) &&
       result.tried.some((t) => t.includes('/definitely/not/a/module.mjs')),
     result.tried.join(' | ').slice(0, 240))
-  // With the ladder enabled, the host package must be found in this environment.
+  // With the ladder enabled, the host package must be found when running
+  // alongside DSH.  In bare CI environments without DSH installed, skip these
+  // three assertions just as Section 8b does.
   // Note: resolvePackage is generic — the ladder is supplied by the caller
   // (resolveDefineTool wires defineToolPathCandidates in), which is the seam
   // that lets both be tested independently.
-  const real = await I.resolvePackage(['@deepseek-ai/dsh-tools'],
-    (m) => (m && typeof m.defineTool === 'function' ? m.defineTool : undefined),
-    { candidates: I.defineToolPathCandidates({}) })
-  check('resolvePackage finds the real host package via the default ladder',
-    real.ok === true && typeof real.value === 'function',
-    real.tried.join(' | ').slice(0, 240))
-  check('the successful resolution reports which channel won',
-    real.ok === true && /^(esm|cjs|fs):/.test(String(real.via)), String(real.via))
-  const wired = await I.resolveDefineTool({})
-  check('resolveDefineTool wires the ladder and succeeds here',
-    wired.ok === true && typeof wired.defineTool === 'function',
-    String(wired.ok ? wired.via : wired.error).slice(0, 200))
+  if (!realHost) {
+    skip('real host resolution checks', 'dsh-tools not resolvable in this environment')
+  } else {
+    const real = await I.resolvePackage(['@deepseek-ai/dsh-tools'],
+      (m) => (m && typeof m.defineTool === 'function' ? m.defineTool : undefined),
+      { candidates: I.defineToolPathCandidates({}) })
+    check('resolvePackage finds the real host package via the default ladder',
+      real.ok === true && typeof real.value === 'function',
+      real.tried.join(' | ').slice(0, 240))
+    check('the successful resolution reports which channel won',
+      real.ok === true && /^(esm|cjs|fs):/.test(String(real.via)), String(real.via))
+    const wired = await I.resolveDefineTool({})
+    check('resolveDefineTool wires the ladder and succeeds here',
+      wired.ok === true && typeof wired.defineTool === 'function',
+      String(wired.ok ? wired.via : wired.error).slice(0, 200))
+  }
 }
 {
   const failures = await I.resolveDefineTool({ candidates: ['/definitely/not/here.js'] })
